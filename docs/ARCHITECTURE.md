@@ -8,4 +8,4 @@ AgentMesh keeps durable collaboration decisions in `.agentmesh/collaboration-pla
 
 The review packet carries bounded diffs and checkpoint summaries. Automatic review runs a harness in its own checkout with a read-only mode where documented and verifies the checkout did not change. When automatic review fails, the phase waits for a manual review. AgentMesh has no independent engineering decision engine; `plan` asks participating harnesses for proposals and validates their synthesized plan.
 
-The integration branch is a checkout under `.agentmesh/integration`. `advance` fast-forwards the project branch after validation and commits the next phase selection. Old agent branches remain as Git refs; clean old worktrees are removed.
+The integration branch is a checkout under `.agentmesh/integration`. A completed checkpoint may commit a revised plan there; `advance` accepts only plan changes after validation, fast-forwards the project branch, and commits the next phase selection. Old agent branches remain as Git refs; clean old worktrees are removed.

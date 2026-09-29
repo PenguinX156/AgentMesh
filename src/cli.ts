@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultPlan, inferProjectType, planPath, readPlan, writePlan } from './config.js';
+import { defaultPlan, inferProjectType, planPath, writePlan } from './config.js';
 import { adapters, type HarnessName } from './harness.js';
 import { Runtime } from './runtime.js';
-import { Git } from './git.js';
 import { State } from './state.js';
 import { installIntegrations } from './install.js';
 import { serveMcp } from './mcp.js';
@@ -15,13 +14,19 @@ import { collaboratePlan } from './planning.js';
 
 const args = process.argv.slice(2);
 const command = args.shift() ?? 'help';
-function option(name: string, fallback?: string) { const i = args.indexOf(`--${name}`); return i < 0 ? fallback : args[i + 1]; }
+function option(name: string, fallback?: string) {
+  const i = args.indexOf(`--${name}`);
+  if (i < 0) return fallback;
+  const value = args[i + 1];
+  if (!value || value.startsWith('--')) throw new Error(`--${name} requires a value`);
+  return value;
+}
 function output(value: unknown) { process.stdout.write(JSON.stringify(value, null, 2) + '\n'); }
-function usage() { console.log('agentmesh init|plan|install-integrations|doctor|start|status|agents|phase|checkpoint|review|fix|integrate|advance|resume|recover|mcp'); }
+function usage() { console.log('agentmesh init|plan|install-integrations|doctor|start|status|agents|phase|checkpoint|review|fix|integrate|revise-plan|advance|resume|recover|mcp'); }
 const root = resolve(option('root', process.env.AGENTMESH_ROOT ?? process.cwd())!);
 async function main() {
   if (command === 'help') return usage();
-  if (command === 'mcp') return serveMcp(root, option('agent') ?? process.env.AGENTMESH_AGENT_ID ?? '');
+  if (command === 'mcp') return serveMcp(option('root') ?? process.env.AGENTMESH_ROOT, option('agent') ?? process.env.AGENTMESH_AGENT_ID);
   if (command === 'init') {
     if (existsSync(planPath(root))) throw new Error('Collaboration plan already exists');
     if (!existsSync(join(root, '.git'))) runSync('git', ['init'], root);
@@ -30,10 +35,16 @@ async function main() {
     const counts = new Map<string, number>();
     const agents = names.map(name => { const n = (counts.get(name) ?? 0) + 1; counts.set(name, n); return { id: n === 1 ? name : `${name}-${n}`, harness: name, role: 'developer' }; });
     const plan = defaultPlan(option('type', inferProjectType(root))!, agents);
+    const packageFile = join(root, 'package.json');
+    if (existsSync(packageFile)) {
+      const scripts = JSON.parse(readFileSync(packageFile, 'utf8')).scripts ?? {};
+      const validation = ['test', 'build', 'lint', 'typecheck'].filter(name => typeof scripts[name] === 'string').map(name => ['npm', 'run', name]);
+      for (const phase of plan.phases) phase.validation = validation;
+    }
     writePlan(root, plan);
     writeFileSync(join(root, '.agentmesh', '.gitignore'), 'state.sqlite*\nworktrees/\nintegration/\n');
     const state = new State(root); state.close();
-    output({ plan: planPath(root), agents, next: 'Edit the plan, commit it, then run agentmesh start' });
+    output({ plan: planPath(root), agents, validation: plan.phases[0]?.validation, next: 'Review validation commands, edit and commit the plan, then run agentmesh start' });
     return;
   }
   if (command === 'doctor') return output(doctor(root));
@@ -70,6 +81,7 @@ async function main() {
       case 'fix': { const agent = option('agent'); if (!agent) throw new Error('fix requires --agent'); output(await runtime.fixAgent(agent)); break; }
       case 'integrate': output(await runtime.integrate()); break;
       case 'recover': output(runtime.recover()); break;
+      case 'revise-plan': { const file = option('file'); if (!file) throw new Error('revise-plan requires --file'); output(runtime.revisePlan(JSON.parse(readFileSync(resolve(file), 'utf8')))); break; }
       case 'advance': output(runtime.advance()); break;
       default: usage(); process.exitCode = 2;
     }

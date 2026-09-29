@@ -26,7 +26,7 @@ test('dogfood: dependent tasks, automatic review, and validation run end to end'
     const mock = (id: string): HarnessAdapter => ({
       name: id as 'codex' | 'gemini',
       detect: () => ({ installed: true, supportsResume: true, supportsExternalPrompt: true, supportsMCP: true, supportsCancellation: true, supportsPersistentSession: true, supportsStructuredOutput: true }),
-      invoke: async (prompt, cwd, _model, _session, _signal, _identity, mode) => {
+      invoke: async (_prompt, cwd, _model, _session, _signal, _identity, mode) => {
         if (mode === 'review') return { text: JSON.stringify({ verdict: 'approve', body: 'Reviewed diff and tests' }), raw: '' };
         calls.push(id);
         if (id === 'codex') writeFileSync(join(cwd, 'index.mjs'), 'export const value = 42;\n');

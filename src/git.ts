@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
-import { resolve, join, isAbsolute, relative, sep } from 'node:path';
+import { resolve, join, isAbsolute } from 'node:path';
 import { runSync } from './process.js';
 
 const safeRef = /^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/;
@@ -61,6 +61,8 @@ export class Git {
     this.ensureBranch(integration, foundation);
     const path = join(this.root, '.agentmesh', 'integration');
     if (!existsSync(path)) { mkdirSync(resolve(path, '..'), { recursive: true }); this.call('worktree', 'add', path, integration); }
+    if (runSync('git', ['branch', '--show-current'], path) !== integration) throw new Error('Integration checkout is on the wrong branch');
+    if (runSync('git', ['status', '--porcelain'], path)) throw new Error('Integration checkout has uncommitted changes');
     const current = runSync('git', ['rev-parse', 'HEAD'], path);
     if (current !== foundation) throw new Error(`Integration branch is at ${current}; expected ${foundation}`);
     for (const branch of branches) runSync('git', ['merge', '--no-ff', '--no-edit', branch], path);

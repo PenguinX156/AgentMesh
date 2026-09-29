@@ -2,11 +2,35 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { Runtime } from './runtime.js';
+import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { runSync } from './process.js';
+import { planPath } from './config.js';
 
-export async function serveMcp(root: string, agentId: string) {
-  const runtime = new Runtime(root);
-  if (!runtime.plan.agents.some(a => a.id === agentId)) throw new Error(`Unknown AgentMesh agent: ${agentId}`);
+function identity(root?: string, agentId?: string) {
+  if (root && agentId) return { root: resolve(root), agentId };
+  try {
+    const branch = runSync('git', ['branch', '--show-current'], process.cwd());
+    const match = /^agentmesh\/[^/]+\/([a-z][a-z0-9-]*)$/.exec(branch);
+    if (!match) return null;
+    const common = runSync('git', ['rev-parse', '--git-common-dir'], process.cwd());
+    const project = dirname(resolve(process.cwd(), common));
+    if (!existsSync(planPath(project))) return null;
+    return { root: project, agentId: match[1]! };
+  } catch { return null; }
+}
+
+export async function serveMcp(root?: string, agentId?: string) {
   const server = new McpServer({ name: 'agentmesh', version: '0.1.0' });
+  const resolved = identity(root, agentId);
+  if (!resolved) {
+    server.tool('get_project_context', 'Report whether this checkout is in an AgentMesh phase', {}, async () => ({ content: [{ type: 'text' as const, text: JSON.stringify({ active: false, reason: 'No AgentMesh agent identity in this checkout' }) }] }));
+    await server.connect(new StdioServerTransport());
+    return;
+  }
+  const runtime = new Runtime(resolved.root);
+  agentId = resolved.agentId;
+  if (!runtime.plan.agents.some(a => a.id === agentId)) throw new Error(`Unknown AgentMesh agent: ${agentId}`);
   const tool = (name: string, description: string, shape: Record<string, z.ZodTypeAny>, fn: (args: any) => unknown) => {
     server.tool(name, description, shape, async args => {
       try { return { content: [{ type: 'text' as const, text: JSON.stringify(await fn(args)) }] }; }

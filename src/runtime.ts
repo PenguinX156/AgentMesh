@@ -1,4 +1,4 @@
-import { readPlan, writePlan, planPath, type Plan } from './config.js';
+import { readPlan, writePlan, validatePlan, type Plan } from './config.js';
 import { Git } from './git.js';
 import { State } from './state.js';
 import { adapters } from './harness.js';
@@ -129,6 +129,10 @@ export class Runtime {
     this.state.db.prepare('INSERT INTO reviews(phase_id,reviewer,subject,commit_sha,verdict,body) VALUES(?,?,?,?,?,?)').run(phase.id, reviewer, subject, commit, verdict, body);
     this.state.event(phase.id, reviewer, 'review', { subject, commit, verdict, body });
   }
+  requiredReviews() {
+    if (!this.plan.integration.requireReviews || this.plan.agents.length < 2) return 0;
+    return this.plan.intensity === 'high' ? Math.min(2, this.plan.agents.length - 1) : 1;
+  }
   async reviewAll() {
     const phase = this.current();
     if (this.state.phase(phase.id)?.status !== 'review') throw new Error('Phase is not in review');
@@ -136,28 +140,41 @@ export class Runtime {
     for (const subject of this.plan.agents) {
       const subjectRow = this.state.agents().find(a => a.id === subject.id)!;
       const subjectHead = this.git.verifyCommit(subjectRow.branch, this.state.phase(phase.id)!.foundation);
-      const latest = this.state.db.prepare('SELECT reviewer,commit_sha,verdict FROM reviews WHERE phase_id=? AND subject=? ORDER BY id DESC LIMIT 1').get(phase.id, subject.id) as { reviewer: string; commit_sha: string; verdict: string } | undefined;
-      if (latest?.verdict === 'approve' && latest.commit_sha === subjectHead) { results.push({ reviewer: latest.reviewer, subject: subject.id, verdict: 'approve' }); continue; }
       const candidates = this.plan.agents.filter(a => a.id !== subject.id && adapters[a.harness].detect().installed);
-      const reviewer = candidates.find(a => a.harness !== subject.harness) ?? candidates[0];
-      if (!reviewer) { results.push({ reviewer: 'none', subject: subject.id, error: 'No available cross-agent reviewer' }); continue; }
-      const row = this.state.agents().find(a => a.id === reviewer.id)!;
-      const before = runSync('git', ['status', '--porcelain'], row.worktree);
-      const head = runSync('git', ['rev-parse', 'HEAD'], row.worktree);
-      if (before) { results.push({ reviewer: reviewer.id, subject: subject.id, error: 'Reviewer worktree is dirty' }); continue; }
-      try {
-        const prompt = `Review ${subject.id}'s committed changes for correctness, safety, and task completion. Do not modify files. Return only JSON with keys verdict (approve or changes_requested) and body (concise findings).\nTask: ${JSON.stringify(this.getTask(subject.id))}\nDiff:\n${this.diff(subject.id)}`;
-        const response = await adapters[reviewer.harness].invoke(prompt, row.worktree, reviewer.model, undefined, undefined, { root: this.root, agentId: reviewer.id }, 'review');
-        if (runSync('git', ['status', '--porcelain'], row.worktree) !== before || runSync('git', ['rev-parse', 'HEAD'], row.worktree) !== head) throw new Error('Review modified reviewer worktree');
-        const parsed = JSON.parse(response.text.slice(response.text.indexOf('{'), response.text.lastIndexOf('}') + 1));
-        if (!['approve', 'changes_requested'].includes(parsed.verdict) || typeof parsed.body !== 'string') throw new Error('Invalid review response');
-        this.submitReview(reviewer.id, subject.id, parsed.verdict, parsed.body);
-        results.push({ reviewer: reviewer.id, subject: subject.id, verdict: parsed.verdict });
-      } catch (error) { results.push({ reviewer: reviewer.id, subject: subject.id, error: String(error) }); }
+      candidates.sort((a, b) => Number(b.harness !== subject.harness) - Number(a.harness !== subject.harness));
+      if (candidates.length < this.requiredReviews()) { results.push({ reviewer: 'none', subject: subject.id, error: 'Not enough available cross-agent reviewers' }); continue; }
+      let approvals = 0;
+      for (const reviewer of candidates) {
+        const latest = this.state.db.prepare('SELECT commit_sha,verdict FROM reviews WHERE phase_id=? AND subject=? AND reviewer=? ORDER BY id DESC LIMIT 1').get(phase.id, subject.id, reviewer.id) as { commit_sha: string; verdict: string } | undefined;
+        if (latest?.commit_sha === subjectHead) {
+          results.push({ reviewer: reviewer.id, subject: subject.id, verdict: latest.verdict });
+          if (latest.verdict === 'approve') approvals++;
+          else break;
+          if (approvals >= this.requiredReviews()) break;
+          continue;
+        }
+        const row = this.state.agents().find(a => a.id === reviewer.id)!;
+        const before = runSync('git', ['status', '--porcelain'], row.worktree);
+        const head = runSync('git', ['rev-parse', 'HEAD'], row.worktree);
+        if (before) { results.push({ reviewer: reviewer.id, subject: subject.id, error: 'Reviewer worktree is dirty' }); break; }
+        try {
+          const prompt = `Review ${subject.id}'s committed changes for correctness, safety, and task completion. Do not modify files. Return only JSON with keys verdict (approve or changes_requested) and body (concise findings).\nTask: ${JSON.stringify(this.getTask(subject.id))}\nDiff:\n${this.diff(subject.id)}`;
+          const response = await adapters[reviewer.harness].invoke(prompt, row.worktree, reviewer.model, undefined, undefined, { root: this.root, agentId: reviewer.id }, 'review');
+          if (runSync('git', ['status', '--porcelain'], row.worktree) !== before || runSync('git', ['rev-parse', 'HEAD'], row.worktree) !== head) throw new Error('Review modified reviewer worktree');
+          const parsed = JSON.parse(response.text.slice(response.text.indexOf('{'), response.text.lastIndexOf('}') + 1));
+          if (!['approve', 'changes_requested'].includes(parsed.verdict) || typeof parsed.body !== 'string') throw new Error('Invalid review response');
+          this.submitReview(reviewer.id, subject.id, parsed.verdict, parsed.body);
+          results.push({ reviewer: reviewer.id, subject: subject.id, verdict: parsed.verdict });
+          if (parsed.verdict === 'approve') approvals++;
+          else break;
+          if (approvals >= this.requiredReviews()) break;
+        } catch (error) { results.push({ reviewer: reviewer.id, subject: subject.id, error: String(error) }); break; }
+      }
     }
     return results;
   }
   async runPhase(signal?: AbortSignal) {
+    if (!this.current().validation.length) throw new Error('Configure at least one current-phase validation command before starting agents');
     this.begin();
     const phaseId = this.current().id;
     let agentResults: Awaited<ReturnType<Runtime['runAgents']>> = [];
@@ -165,15 +182,15 @@ export class Runtime {
     if (agentResults.some(r => r.status === 'rejected')) return { status: this.status(), agentResults, pending: 'agent failure' };
     if (this.state.phase(phaseId)?.status !== 'review') return { status: this.status(), agentResults, pending: 'checkpoint' };
     const reviewRounds: unknown[] = [];
-    if (this.plan.integration.requireReviews && this.plan.agents.length > 1) {
+    if (this.requiredReviews() > 0) {
       for (let round = 0; round < 3; round++) {
         const reviews = await this.reviewAll();
         reviewRounds.push(reviews);
         if (reviews.some(r => r.error)) return { status: this.status(), agentResults, reviewRounds, pending: 'review error' };
-        const requested = reviews.filter(r => r.verdict === 'changes_requested');
+        const requested = [...new Set(reviews.filter(r => r.verdict === 'changes_requested').map(r => r.subject))];
         if (!requested.length) break;
         if (round === 2) return { status: this.status(), agentResults, reviewRounds, pending: 'review changes' };
-        for (const item of requested) await this.fixAgent(item.subject);
+        for (const subject of requested) await this.fixAgent(subject);
       }
     }
     const integration = await this.integrate();
@@ -185,7 +202,9 @@ export class Runtime {
     const agent = this.plan.agents.find(a => a.id === agentId);
     if (!agent) throw new Error('Unknown agent');
     const reviews = this.state.db.prepare('SELECT reviewer,verdict,body FROM reviews WHERE phase_id=? AND subject=? ORDER BY id DESC').all(phase.id, agentId) as { reviewer: string; verdict: string; body: string }[];
-    if (!reviews.length || reviews[0]!.verdict !== 'changes_requested') throw new Error('No requested changes for this agent');
+    const latest = new Map<string, (typeof reviews)[number]>();
+    for (const review of reviews) if (!latest.has(review.reviewer)) latest.set(review.reviewer, review);
+    if (![...latest.values()].some(review => review.verdict === 'changes_requested')) throw new Error('No requested changes for this agent');
     const row = this.state.agents().find(a => a.id === agentId)!;
     const prompt = `Address this checkpoint review in your own worktree. Commit fixes and report tests and risks. Keep frozen contracts unchanged.\n${JSON.stringify(this.checkpointContext(agentId))}`;
     const response = await adapters[agent.harness].invoke(prompt, row.worktree, agent.model, row.session_id ?? undefined, undefined, { root: this.root, agentId });
@@ -203,11 +222,14 @@ export class Runtime {
     const phase = this.current(), state = this.state.phase(phase.id);
     if (!state || state.status !== 'review') throw new Error('Checkpoint review is not complete');
     const agents = this.state.agents();
-    if (this.plan.integration.requireReviews && agents.length > 1) {
+    if (this.requiredReviews() > 0) {
       for (const subject of agents) {
-        const reviews = this.state.db.prepare('SELECT verdict,commit_sha FROM reviews WHERE phase_id=? AND subject=? ORDER BY id DESC').all(phase.id, subject.id) as { verdict: string; commit_sha: string }[];
+        const reviews = this.state.db.prepare('SELECT reviewer,verdict,commit_sha FROM reviews WHERE phase_id=? AND subject=? ORDER BY id DESC').all(phase.id, subject.id) as { reviewer: string; verdict: string; commit_sha: string }[];
         const head = this.git.verifyCommit(subject.branch, state.foundation);
-        if (!reviews.length || reviews[0]!.verdict !== 'approve' || reviews[0]!.commit_sha !== head) throw new Error(`${subject.id} needs a current approval`);
+        const byReviewer = new Map<string, (typeof reviews)[number]>();
+        for (const review of reviews) if (!byReviewer.has(review.reviewer)) byReviewer.set(review.reviewer, review);
+        const latest = [...byReviewer.values()];
+        if (latest.some(review => review.commit_sha === head && review.verdict === 'changes_requested') || latest.filter(review => review.commit_sha === head && review.verdict === 'approve').length < this.requiredReviews()) throw new Error(`${subject.id} needs ${this.requiredReviews()} current approval(s)`);
       }
     }
     if (!phase.validation.length) throw new Error('Configure at least one project validation command before integrating');
@@ -255,16 +277,43 @@ export class Runtime {
     });
     return { backup, phase: this.state.phase(phase.id) };
   }
+  revisePlan(input: unknown) {
+    const phase = this.current(), state = this.state.phase(phase.id);
+    if (!state || state.status !== 'complete' || !state.integration_commit) throw new Error('Plan revisions require a completed integration');
+    const proposed = validatePlan(input);
+    if (proposed.currentPhase !== phase.id) throw new Error('Keep the current phase selected until advance');
+    if (JSON.stringify(proposed.agents) !== JSON.stringify(this.plan.agents)) throw new Error('Agent roster cannot change during checkpoint revision');
+    if (proposed.integration.branch !== this.plan.integration.branch) throw new Error('Integration branch cannot change during checkpoint revision');
+    const completed = this.plan.phases.slice(0, this.plan.phases.findIndex(p => p.id === phase.id) + 1);
+    if (JSON.stringify(proposed.phases.slice(0, completed.length)) !== JSON.stringify(completed)) throw new Error('Completed phase definitions cannot be rewritten');
+    const path = this.git.integrationPath();
+    if (runSync('git', ['status', '--porcelain'], path)) throw new Error('Integration checkout must be clean before revising the plan');
+    writePlan(path, proposed);
+    runSync('git', ['add', '--', '.agentmesh/collaboration-plan.json'], path);
+    if (!runSync('git', ['diff', '--cached', '--name-only'], path)) return { changed: false, commit: runSync('git', ['rev-parse', 'HEAD'], path) };
+    runSync('git', ['commit', '-m', 'agentmesh: revise collaboration plan'], path);
+    const commit = runSync('git', ['rev-parse', 'HEAD'], path);
+    this.state.event(phase.id, null, 'plan_revised', { commit });
+    return { changed: true, commit };
+  }
   advance() {
-    const index = this.plan.phases.findIndex(p => p.id === this.plan.currentPhase);
-    const next = this.plan.phases[index + 1];
-    if (!next) throw new Error('No further phase is planned');
     const phase = this.state.phase(this.current().id);
     if (!phase || phase.status !== 'complete' || !phase.integration_commit) throw new Error('Current phase is not integrated');
     this.git.requireClean();
     if (this.git.head() !== phase.foundation) throw new Error('Main checkout moved since phase start; integrate manually');
+    const integrationHead = this.git.call('rev-parse', this.plan.integration.branch);
+    if (this.git.call('merge-base', phase.integration_commit, integrationHead) !== phase.integration_commit) throw new Error('Integration branch no longer descends from validated commit');
+    const postValidationFiles = this.git.changedFiles(phase.integration_commit, this.plan.integration.branch);
+    if (postValidationFiles.some(file => file !== '.agentmesh/collaboration-plan.json')) throw new Error('Code changed on integration branch after validation');
+    const integratedPlan = readPlan(this.git.integrationPath());
+    if (integratedPlan.currentPhase !== this.current().id) throw new Error('Integration plan changed the current phase before advance');
+    if (JSON.stringify(integratedPlan.agents) !== JSON.stringify(this.plan.agents) || integratedPlan.integration.branch !== this.plan.integration.branch) throw new Error('Integration plan changed agent roster or branch');
+    const index = integratedPlan.phases.findIndex(p => p.id === integratedPlan.currentPhase);
+    if (JSON.stringify(integratedPlan.phases.slice(0, index + 1)) !== JSON.stringify(this.plan.phases.slice(0, index + 1))) throw new Error('Integration plan rewrote a completed phase');
+    const next = integratedPlan.phases[index + 1];
+    if (!next) throw new Error('No further phase is planned');
     this.git.call('merge', '--ff-only', this.plan.integration.branch);
-    const updated: Plan = { ...this.plan, currentPhase: next.id };
+    const updated: Plan = { ...integratedPlan, currentPhase: next.id };
     writePlan(this.root, updated);
     this.git.call('add', '--', '.agentmesh/collaboration-plan.json');
     this.git.call('commit', '-m', `agentmesh: begin ${next.id}`);

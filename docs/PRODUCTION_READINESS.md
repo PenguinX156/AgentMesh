@@ -16,7 +16,7 @@ AgentMesh is **not yet production-ready**. This checklist maps the primary speci
 | Install integrations | `src/install.ts` | Codex registration and readback pass in an isolated Codex home; live MCP use from a Codex model and Cursor/Gemini setup remain |
 | Token efficiency | `src/runtime.ts` | Bounded diffs/proposals and checkpoint packets; no usage benchmark yet |
 | Security and recovery | `src/process.ts`, `src/git.ts`, `src/runtime.ts` | Argument-safe subprocess calls, Windows `.cmd` regression, backup recovery tested; threat review remains |
-| Multiple project types | `src/config.ts`, `tests/dogfood.test.ts` | Library run exercised; web, game, and plugin dogfood remains |
+| Multiple project types | `src/config.ts`, `tests/dogfood.test.ts`, `tests/profiles.test.ts` | Library, web HTTP, plugin, and game runs pass with mocked harnesses; browser and protocol compatibility remain |
 | Clean installation | `package.json`, `scripts/smoke-package.mjs` | Fresh tarball install, `init`, and `doctor` pass on Windows; other platforms remain |
 
 External source references used for adapter design: [Codex CLI/MCP](https://developers.openai.com/learn/docs-mcp), [Cursor CLI parameters](https://docs.cursor.com/en/cli/reference/parameters), [Cursor headless mode](https://docs.cursor.com/en/cli/headless), and [Gemini CLI configuration](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md).

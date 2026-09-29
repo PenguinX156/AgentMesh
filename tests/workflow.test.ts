@@ -1,9 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { defaultPlan, writePlan } from '../src/config.js';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { defaultPlan, readPlan, writePlan } from '../src/config.js';
 import { Runtime } from '../src/runtime.js';
 import { runSync } from '../src/process.js';
 
@@ -28,6 +31,14 @@ test('two isolated agents checkpoint, review, and integrate from one foundation'
       const agents = runtime.state.agents();
       assert.equal(agents.length, 2);
       assert.notEqual(agents[0]!.worktree, agents[1]!.worktree);
+      const cli = resolve(fileURLToPath(import.meta.url), '..', '..', 'src', 'cli.js');
+      const client = new Client({ name: 'agentmesh-worktree-test', version: '1.0.0' });
+      const transport = new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], cwd: agents[0]!.worktree, env: { ...process.env, AGENTMESH_ROOT: '', AGENTMESH_AGENT_ID: '' } as Record<string, string> });
+      try {
+        await client.connect(transport);
+        const response = await client.callTool({ name: 'get_project_context', arguments: {} });
+        assert.equal(JSON.parse((response as { content: { text: string }[] }).content[0]!.text).agentId, 'codex');
+      } finally { await client.close(); }
       for (const agent of agents) {
         writeFileSync(join(agent.worktree, `${agent.id}.txt`), agent.id);
         runSync('git', ['add', '.'], agent.worktree);
@@ -42,9 +53,13 @@ test('two isolated agents checkpoint, review, and integrate from one foundation'
       assert.equal(runtime.state.phase('phase-1')?.status, 'complete');
       assert.equal(runSync('git', ['show', 'agentmesh/integration:codex.txt'], root), 'codex');
       assert.equal(runSync('git', ['show', 'agentmesh/integration:gemini.txt'], root), 'gemini');
+      const revised = structuredClone(runtime.plan);
+      revised.phases[1]!.title = 'Revised implementation phase';
+      assert.equal(runtime.revisePlan(revised).changed, true);
       const advanced = runtime.advance();
       assert.equal(advanced.next, 'phase-2');
       assert.ok(advanced.cleanup.every(item => item.removed));
+      assert.equal(readPlan(root).phases[1]!.title, 'Revised implementation phase');
     } finally { runtime.close(); }
     const nextRuntime = new Runtime(root);
     try {
@@ -106,6 +121,45 @@ test('failed validation preserves integration history and reopens phase', async 
       assert.ok(recovered.backup);
       assert.equal(runtime.state.phase('phase-1')?.status, 'working');
       assert.equal(runSync('git', ['rev-parse', 'HEAD'], runtime.git.integrationPath()), runtime.state.phase('phase-1')?.foundation);
+    } finally { runtime.close(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('high intensity requires two distinct current reviewers', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agentmesh-high-'));
+  try {
+    runSync('git', ['init'], root);
+    runSync('git', ['config', 'user.email', 'test@example.com'], root);
+    runSync('git', ['config', 'user.name', 'Test'], root);
+    writeFileSync(join(root, '.gitignore'), '.agentmesh/state.sqlite*\n.agentmesh/worktrees/\n.agentmesh/integration/\n');
+    const plan = defaultPlan('library', [
+      { id: 'codex', harness: 'codex', role: 'code' },
+      { id: 'cursor', harness: 'cursor', role: 'review' },
+      { id: 'gemini', harness: 'gemini', role: 'tests' }
+    ]);
+    plan.intensity = 'high';
+    plan.phases[0]!.validation = [['node', '--version']];
+    writePlan(root, plan);
+    runSync('git', ['add', '.'], root); runSync('git', ['commit', '-m', 'base'], root);
+    const runtime = new Runtime(root);
+    try {
+      runtime.begin();
+      for (const agent of runtime.state.agents()) {
+        writeFileSync(join(agent.worktree, `${agent.id}.txt`), agent.id);
+        runSync('git', ['add', '.'], agent.worktree); runSync('git', ['commit', '-m', agent.id], agent.worktree);
+        runtime.submitCheckpoint(agent.id, `${agent.id}-work`, { summary: 'done' });
+      }
+      for (const subject of plan.agents) {
+        const reviewer = plan.agents.find(a => a.id !== subject.id)!;
+        runtime.submitReview(reviewer.id, subject.id, 'approve', 'approved');
+      }
+      await assert.rejects(runtime.integrate(), /needs 2 current approval/);
+      for (const subject of plan.agents) {
+        const reviewer = plan.agents.filter(a => a.id !== subject.id)[1]!;
+        runtime.submitReview(reviewer.id, subject.id, 'approve', 'approved');
+      }
+      await runtime.integrate();
+      assert.equal(runtime.state.phase('phase-1')?.status, 'complete');
     } finally { runtime.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
