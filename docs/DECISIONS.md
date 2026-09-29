@@ -7,3 +7,4 @@
 - **Validation is required.** Empty validation arrays may exist in a newly initialized scaffold, but integration refuses them.
 - **Recovery preserves history.** Failed integration commits receive a backup ref before the owned integration checkout resets to the phase foundation.
 - **Only one orchestration run may launch agents at a time.** A SQLite lock prevents concurrent `start`/`resume` calls and reclaims a lock after its owning process exits.
+- **Harnesses choose their own models.** The plan has no model field, and launch adapters pass no model override. Manual app use starts from a managed worktree and uses MCP for coordination.

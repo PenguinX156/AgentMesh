@@ -11,6 +11,7 @@ import { serveMcp } from './mcp.js';
 import { runSync } from './process.js';
 import { doctor } from './doctor.js';
 import { collaboratePlan } from './planning.js';
+import { cloneGithubRepo, githubRepoName } from './onboarding.js';
 
 const args = process.argv.slice(2);
 const command = args.shift() ?? 'help';
@@ -22,12 +23,14 @@ function option(name: string, fallback?: string) {
   return value;
 }
 function output(value: unknown) { process.stdout.write(JSON.stringify(value, null, 2) + '\n'); }
-function usage() { console.log('agentmesh init|plan|install-integrations|doctor|start|status|agents|phase|checkpoint|review|fix|integrate|revise-plan|advance|resume|recover|mcp'); }
-const root = resolve(option('root', process.env.AGENTMESH_ROOT ?? process.cwd())!);
+function usage() { console.log('agentmesh init [--repo URL] [--root PATH] [--agents codex,cursor,gemini]|plan|install-integrations|doctor|start [--manual]|status|agents|phase|checkpoint|review|fix|integrate|revise-plan|advance|resume|recover|mcp'); }
 async function main() {
+  const remote = command === 'init' ? option('repo') : undefined;
+  const root = resolve(option('root', remote ? join(process.cwd(), githubRepoName(remote)) : process.env.AGENTMESH_ROOT ?? process.cwd())!);
   if (command === 'help') return usage();
   if (command === 'mcp') return serveMcp(option('root') ?? process.env.AGENTMESH_ROOT, option('agent') ?? process.env.AGENTMESH_AGENT_ID);
   if (command === 'init') {
+    if (remote) await cloneGithubRepo(remote, root);
     if (existsSync(planPath(root))) throw new Error('Collaboration plan already exists');
     if (!existsSync(join(root, '.git'))) runSync('git', ['init'], root);
     const names = (option('agents', 'codex') ?? 'codex').split(',') as HarnessName[];
@@ -44,7 +47,7 @@ async function main() {
     writePlan(root, plan);
     writeFileSync(join(root, '.agentmesh', '.gitignore'), 'state.sqlite*\nworktrees/\nintegration/\n');
     const state = new State(root); state.close();
-    output({ plan: planPath(root), agents, validation: plan.phases[0]?.validation, next: 'Review validation commands, edit and commit the plan, then run agentmesh start' });
+    output({ root, plan: planPath(root), agents, validation: plan.phases[0]?.validation, next: 'Review validation commands, commit the plan, run install-integrations, then start --manual or start' });
     return;
   }
   if (command === 'doctor') return output(doctor(root));
@@ -54,6 +57,11 @@ async function main() {
   try {
     switch (command) {
       case 'start': {
+        if (args.includes('--manual')) {
+          const phase = runtime.begin();
+          output({ mode: 'manual', phase, agents: runtime.state.agents().map(agent => ({ id: agent.id, harness: agent.harness, worktree: agent.worktree, tasks: runtime.getTask(agent.id) })), next: 'Open each worktree in its harness app and use AgentMesh MCP tools to coordinate work and submit checkpoints' });
+          break;
+        }
         const controller = new AbortController();
         process.once('SIGINT', () => controller.abort());
         output(await runtime.runPhase(controller.signal));

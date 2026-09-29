@@ -11,7 +11,7 @@ export class State {
     this.db = new DatabaseSync(join(root, '.agentmesh', 'state.sqlite'));
     try {
     const schemaVersion = (this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
-    if (schemaVersion > 1) throw new Error(`AgentMesh state schema ${schemaVersion} is newer than this runtime`);
+    if (schemaVersion > 2) throw new Error(`AgentMesh state schema ${schemaVersion} is newer than this runtime`);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=30000;
       CREATE TABLE IF NOT EXISTS phases(id TEXT PRIMARY KEY, status TEXT NOT NULL, foundation TEXT NOT NULL, integration_commit TEXT);
       CREATE TABLE IF NOT EXISTS agents(id TEXT PRIMARY KEY, harness TEXT NOT NULL, branch TEXT NOT NULL, worktree TEXT NOT NULL, session_id TEXT);
@@ -20,6 +20,7 @@ export class State {
       CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, phase_id TEXT NOT NULL, reviewer TEXT NOT NULL, subject TEXT NOT NULL, commit_sha TEXT NOT NULL, verdict TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS integrations(id INTEGER PRIMARY KEY AUTOINCREMENT, phase_id TEXT NOT NULL, commit_sha TEXT, status TEXT NOT NULL, output TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
       CREATE TABLE IF NOT EXISTS orchestration_locks(name TEXT PRIMARY KEY, pid INTEGER NOT NULL, token TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+      CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, phase_id TEXT NOT NULL REFERENCES phases(id), sender TEXT NOT NULL REFERENCES agents(id), recipient TEXT NOT NULL REFERENCES agents(id), kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     `);
     if (schemaVersion === 0) {
       const columns = this.db.prepare('PRAGMA table_info(tasks)').all() as { name: string; pk: number }[];
@@ -33,8 +34,8 @@ export class State {
           ALTER TABLE tasks_new RENAME TO tasks;
           COMMIT;`);
       }
-      this.db.exec('PRAGMA user_version=1');
     }
+    if (schemaVersion < 2) this.db.exec('PRAGMA user_version=2');
     const integrity = this.db.prepare('PRAGMA quick_check').get() as { quick_check: string };
     if (integrity.quick_check !== 'ok') throw new Error(`AgentMesh state database integrity check failed: ${integrity.quick_check}`);
     } catch (error) {
@@ -55,6 +56,16 @@ export class State {
   event(phase: string, agent: string | null, kind: string, body: unknown) { this.db.prepare('INSERT INTO events(phase_id,agent_id,kind,body) VALUES(?,?,?,?)').run(phase, agent, kind, JSON.stringify(body)); }
   events(phase: string) { return this.db.prepare('SELECT * FROM events WHERE phase_id=? ORDER BY id').all(phase); }
   recentEvents(phase: string, limit = 50) { return this.db.prepare('SELECT * FROM events WHERE phase_id=? ORDER BY id DESC LIMIT ?').all(phase, limit).reverse(); }
+  message(phase: string, sender: string, recipient: string, kind: string, body: string) {
+    const result = this.db.prepare('INSERT INTO messages(phase_id,sender,recipient,kind,body) VALUES(?,?,?,?,?)').run(phase, sender, recipient, kind, body);
+    return Number(result.lastInsertRowid);
+  }
+  messagesFor(phase: string, agent: string, sinceId = 0, limit = 50) {
+    return this.db.prepare('SELECT * FROM messages WHERE phase_id=? AND id>? AND (sender=? OR recipient=?) ORDER BY id LIMIT ?').all(phase, sinceId, agent, agent, limit) as { id: number; sender: string; recipient: string; kind: string; body: string; created_at: string }[];
+  }
+  recentMessagesFor(phase: string, agent: string, limit = 20) {
+    return (this.db.prepare('SELECT * FROM messages WHERE phase_id=? AND (sender=? OR recipient=?) ORDER BY id DESC LIMIT ?').all(phase, agent, agent, limit) as ReturnType<State['messagesFor']>).reverse();
+  }
   async withOrchestrationLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const token = randomUUID();
     this.transaction(() => {

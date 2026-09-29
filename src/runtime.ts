@@ -69,7 +69,7 @@ export class Runtime {
           'At completion, give a compact report of changes, tests, decisions, and risks.'
         ].filter(Boolean).join('\n');
         this.state.db.prepare("UPDATE tasks SET status='working' WHERE phase_id=? AND id=?").run(phase.id, task.id);
-        const result = await adapter.invoke(prompt, row.worktree, agent.model, row.session_id ?? undefined, signal, { root: this.root, agentId: agent.id });
+        const result = await adapter.invoke(prompt, row.worktree, row.session_id ?? undefined, signal, { root: this.root, agentId: agent.id });
         if (result.sessionId) this.state.db.prepare('UPDATE agents SET session_id=? WHERE id=?').run(result.sessionId, agent.id);
         if (/^\s*blocked\b/i.test(result.text)) { this.report(agent.id, 'blocker', result.text.slice(0, 12000)); throw new Error(`${agent.id} reported a blocker`); }
         this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${task.id} checkpoint`);
@@ -90,13 +90,15 @@ export class Runtime {
     this.state.event(row.phase_id, agent, 'task_updated', { taskId, status });
   }
   submitCheckpoint(agent: string, taskId: string, report: { summary: string; tests?: string[]; risks?: string[] }) {
+    if (!report.summary.trim() || report.summary.length > 12000 || (report.tests ?? []).length > 20 || (report.risks ?? []).length > 20 ||
+      [...(report.tests ?? []), ...(report.risks ?? [])].some(item => item.length > 500)) throw new Error('Checkpoint report exceeds compact context limits');
     const phase = this.current();
     const state = this.state.phase(phase.id);
     if (!state || !['working', 'review'].includes(state.status)) throw new Error('Phase is not accepting checkpoints');
     const task = this.state.tasks(phase.id).find(t => t.id === taskId);
     if (!task || task.owner !== agent) throw new Error('Task ownership mismatch');
     const row = this.state.agents().find(a => a.id === agent)!;
-    if (runSync('git', ['status', '--porcelain'], row.worktree)) throw new Error(`Uncommitted changes in ${agent} worktree`);
+    this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${taskId} checkpoint`);
     const commit = this.git.verifyCommit(row.branch, state.foundation);
     this.git.assertContracts(state.foundation, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json']);
     const files = this.git.changedFiles(state.foundation, row.branch);
@@ -111,10 +113,27 @@ export class Runtime {
   }
   report(agent: string, kind: 'blocker' | 'contract_conflict' | 'critical_discovery' | 'decision', body: string) {
     if (!this.plan.agents.some(a => a.id === agent)) throw new Error('Unknown agent');
+    if (!body.trim() || body.length > 4000) throw new Error('Event body must be 1-4000 characters');
     const phase = this.current();
+    if (!this.state.phase(phase.id)) throw new Error('Current phase has not started');
     this.state.event(phase.id, agent, kind, { body });
+    if (kind !== 'decision') for (const peer of this.plan.agents.filter(peer => peer.id !== agent)) this.state.message(phase.id, agent, peer.id, kind, body);
     if (kind === 'blocker') for (const task of this.state.tasks(phase.id).filter(task => task.owner === agent && task.status !== 'complete')) this.updateTask(agent, task.id, 'blocked');
     return { recorded: true, synchronizationRequired: kind !== 'decision' };
+  }
+  sendMessage(sender: string, recipient: string, kind: 'blocker' | 'contract_conflict' | 'critical_discovery' | 'review' | 'decision' | 'question', body: string) {
+    const phase = this.current(), status = this.state.phase(phase.id)?.status;
+    if (!status || !['working', 'review'].includes(status)) throw new Error('Phase is not accepting messages');
+    if (sender === recipient || !this.plan.agents.some(agent => agent.id === sender) || !this.plan.agents.some(agent => agent.id === recipient)) throw new Error('Message needs another participating agent');
+    if (!body.trim() || body.length > 4000) throw new Error('Message body must be 1-4000 characters');
+    if (status === 'working' && !['blocker', 'contract_conflict', 'critical_discovery'].includes(kind)) throw new Error('Independent work only permits exceptional messages before checkpoint');
+    const id = this.state.message(phase.id, sender, recipient, kind, body);
+    this.state.event(phase.id, sender, 'message', { recipient, kind, id });
+    return { id, queued: true, delivery: 'Read with get_messages or checkpoint context' };
+  }
+  messagesFor(agent: string, sinceId = 0) {
+    if (!this.plan.agents.some(candidate => candidate.id === agent)) throw new Error('Unknown agent');
+    return this.state.messagesFor(this.current().id, agent, sinceId);
   }
   diff(agentId: string) {
     const phase = this.state.phase(this.current().id);
@@ -124,6 +143,7 @@ export class Runtime {
   }
   submitReview(reviewer: string, subject: string, verdict: 'approve' | 'changes_requested', body: string) {
     const phase = this.current();
+    if (!body.trim() || body.length > 6000) throw new Error('Review body must be 1-6000 characters');
     if (reviewer === subject || !this.plan.agents.some(a => a.id === reviewer) || !this.plan.agents.some(a => a.id === subject)) throw new Error('Review must be cross-agent');
     if (this.state.phase(phase.id)?.status !== 'review') throw new Error('Phase is not in review');
     const row = this.state.agents().find(a => a.id === subject)!;
@@ -161,7 +181,7 @@ export class Runtime {
         if (before) { results.push({ reviewer: reviewer.id, subject: subject.id, error: 'Reviewer worktree is dirty' }); break; }
         try {
           const prompt = `Review ${subject.id}'s committed changes for correctness, safety, and task completion. Do not modify files. Return only JSON with keys verdict (approve or changes_requested) and body (concise findings).\nTask: ${JSON.stringify(this.getTask(subject.id))}\nDiff:\n${this.diff(subject.id)}`;
-          const response = await adapters[reviewer.harness].invoke(prompt, row.worktree, reviewer.model, undefined, undefined, { root: this.root, agentId: reviewer.id }, 'review');
+          const response = await adapters[reviewer.harness].invoke(prompt, row.worktree, undefined, undefined, { root: this.root, agentId: reviewer.id }, 'review');
           if (runSync('git', ['status', '--porcelain'], row.worktree) !== before || runSync('git', ['rev-parse', 'HEAD'], row.worktree) !== head) throw new Error('Review modified reviewer worktree');
           const parsed = JSON.parse(response.text.slice(response.text.indexOf('{'), response.text.lastIndexOf('}') + 1));
           if (!['approve', 'changes_requested'].includes(parsed.verdict) || typeof parsed.body !== 'string') throw new Error('Invalid review response');
@@ -212,7 +232,7 @@ export class Runtime {
     if (![...latest.values()].some(review => review.verdict === 'changes_requested')) throw new Error('No requested changes for this agent');
     const row = this.state.agents().find(a => a.id === agentId)!;
     const prompt = `Address this checkpoint review in your own worktree. AgentMesh commits worktree changes after you finish; do not run git add or git commit. Report tests and risks. Keep frozen contracts unchanged.\n${JSON.stringify(this.checkpointContext(agentId))}`;
-    const response = await adapters[agent.harness].invoke(prompt, row.worktree, agent.model, row.session_id ?? undefined, undefined, { root: this.root, agentId });
+    const response = await adapters[agent.harness].invoke(prompt, row.worktree, row.session_id ?? undefined, undefined, { root: this.root, agentId });
     if (response.sessionId) this.state.db.prepare('UPDATE agents SET session_id=? WHERE id=?').run(response.sessionId, agentId);
     if (/^\s*blocked\b/i.test(response.text)) { this.report(agentId, 'blocker', response.text.slice(0, 12000)); throw new Error(`${agentId} reported a blocker`); }
     this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${agentId} review fixes`);
@@ -221,9 +241,17 @@ export class Runtime {
   }
   checkpointContext(agent: string) {
     const phase = this.current();
-    return { phase: phase.id, tasks: this.state.tasks(phase.id).filter(t => t.owner !== agent),
-      reviews: this.state.db.prepare('SELECT reviewer,subject,commit_sha,verdict,body FROM reviews WHERE phase_id=?').all(phase.id),
-      exceptionalEvents: this.state.recentEvents(phase.id, 50).filter((e: any) => ['blocker', 'contract_conflict', 'critical_discovery'].includes(e.kind)) };
+    const tasks = this.state.tasks(phase.id).filter(t => t.owner !== agent).map(task => {
+      const report = task.report ? JSON.parse(task.report) as { summary?: string; commit?: string; files?: string[] } : null;
+      return { id: task.id, owner: task.owner, status: task.status, commit: report?.commit, summary: report?.summary?.slice(0, 2000), files: report?.files?.slice(0, 40) };
+    });
+    const reviews = (this.state.db.prepare('SELECT reviewer,subject,commit_sha,verdict,body FROM reviews WHERE phase_id=? AND (subject=? OR reviewer=?) ORDER BY id DESC LIMIT 30').all(phase.id, agent, agent) as { reviewer: string; subject: string; commit_sha: string; verdict: string; body: string }[])
+      .map(review => ({ ...review, body: review.body.slice(0, 3000) }));
+    const exceptionalEvents = (this.state.recentEvents(phase.id, 50) as { agent_id: string | null; kind: string; body: string }[])
+      .filter(event => ['blocker', 'contract_conflict', 'critical_discovery'].includes(event.kind))
+      .map(event => ({ agent: event.agent_id, kind: event.kind, body: event.body.slice(0, 2000) }));
+    return { phase: phase.id, tasks: tasks.slice(0, 100), reviews, exceptionalEvents,
+      messages: this.state.recentMessagesFor(phase.id, agent, 20) };
   }
   async integrate() {
     const phase = this.current(), state = this.state.phase(phase.id);

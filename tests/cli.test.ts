@@ -41,5 +41,33 @@ test('CLI initializes a clean project, doctor reads state, and MCP answers', asy
       const response = await inactive.callTool({ name: 'get_project_context', arguments: {} });
       assert.equal(JSON.parse((response as { content: { text: string }[] }).content[0]!.text).active, false);
     } finally { await inactive.close(); }
+    for (const gitArgs of [['config', 'user.email', 'test@example.com'], ['config', 'user.name', 'Test'], ['add', '.'], ['commit', '-m', 'base']]) {
+      const git = spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8' });
+      assert.equal(git.status, 0, git.stderr);
+    }
+    const manual = spawnSync(process.execPath, [cli, 'start', '--manual', '--root', root], { encoding: 'utf8' });
+    assert.equal(manual.status, 0, manual.stderr);
+    const prepared = JSON.parse(manual.stdout);
+    assert.equal(prepared.mode, 'manual');
+    assert.equal(prepared.agents.length, 2);
+    assert.ok(prepared.agents.every((agent: { worktree: string }) => existsSync(agent.worktree)));
+    const codex = new Client({ name: 'agentmesh-codex-manual', version: '1.0.0' });
+    const gemini = new Client({ name: 'agentmesh-gemini-manual', version: '1.0.0' });
+    try {
+      await codex.connect(new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], cwd: prepared.agents[0].worktree, env: { ...process.env, AGENTMESH_ROOT: '', AGENTMESH_AGENT_ID: '' } as Record<string, string> }));
+      await gemini.connect(new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], cwd: prepared.agents[1].worktree, env: { ...process.env, AGENTMESH_ROOT: '', AGENTMESH_AGENT_ID: '' } as Record<string, string> }));
+      const sent = await codex.callTool({ name: 'send_message', arguments: { recipient: 'gemini', kind: 'blocker', body: 'Need the shared interface clarified' } });
+      assert.equal(sent.isError, undefined);
+      const inbox = await gemini.callTool({ name: 'get_messages', arguments: {} });
+      assert.match(JSON.stringify(inbox.content), /shared interface clarified/);
+      const routine = await codex.callTool({ name: 'send_message', arguments: { recipient: 'gemini', kind: 'question', body: 'Routine progress?' } });
+      assert.equal(routine.isError, true);
+      writeFileSync(join(prepared.agents[0].worktree, 'manual.txt'), 'agent work');
+      const checkpoint = await codex.callTool({ name: 'submit_checkpoint', arguments: { taskId: 'codex-work', summary: 'Done in the app worktree' } });
+      assert.equal(checkpoint.isError, undefined, JSON.stringify(checkpoint.content));
+      const committed = spawnSync('git', ['show', 'HEAD:manual.txt'], { cwd: prepared.agents[0].worktree, encoding: 'utf8' });
+      assert.equal(committed.status, 0, committed.stderr);
+      assert.equal(committed.stdout.trim(), 'agent work');
+    } finally { await codex.close(); await gemini.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

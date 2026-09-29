@@ -47,12 +47,13 @@ export async function serveMcp(root?: string, agentId?: string) {
   tool('update_task', 'Update own task status', { taskId: z.string(), status: z.enum(['pending', 'working', 'blocked']) }, ({ taskId, status }) => runtime.updateTask(agentId, taskId, status));
   tool('report_blocker', 'Report an exceptional blocker', { body: z.string() }, ({ body }) => runtime.report(agentId, 'blocker', body));
   tool('report_contract_conflict', 'Report frozen contract conflict', { body: z.string() }, ({ body }) => runtime.report(agentId, 'contract_conflict', body));
-  tool('submit_checkpoint', 'Submit committed work for checkpoint', { taskId: z.string(), summary: z.string(), tests: z.array(z.string()).optional(), risks: z.array(z.string()).optional() }, ({ taskId, summary, tests, risks }) => runtime.submitCheckpoint(agentId, taskId, { summary, tests, risks }));
+  tool('report_critical_discovery', 'Report a discovery that invalidates the phase', { body: z.string() }, ({ body }) => runtime.report(agentId, 'critical_discovery', body));
+  tool('send_message', 'Queue a direct message to another agent; routine messages wait until review', { recipient: z.string(), kind: z.enum(['blocker', 'contract_conflict', 'critical_discovery', 'review', 'decision', 'question']), body: z.string() }, ({ recipient, kind, body }) => runtime.sendMessage(agentId, recipient, kind, body));
+  tool('get_messages', 'Read direct messages to or from this agent after an optional message ID', { sinceId: z.number().int().nonnegative().optional() }, ({ sinceId }) => runtime.messagesFor(agentId, sinceId));
+  tool('submit_checkpoint', 'Commit verified worktree changes and submit a checkpoint', { taskId: z.string(), summary: z.string(), tests: z.array(z.string()).optional(), risks: z.array(z.string()).optional() }, ({ taskId, summary, tests, risks }) => runtime.submitCheckpoint(agentId, taskId, { summary, tests, risks }));
   tool('inspect_agent_diff', 'Read bounded diff for cross-review', { agent: z.string() }, ({ agent }) => runtime.diff(agent));
-  tool('request_review', 'Record review request', { agent: z.string(), body: z.string() }, ({ agent, body }) => {
-    if (agent === agentId || !runtime.plan.agents.some(a => a.id === agent)) throw new Error('Review target must be another participating agent');
-    runtime.state.event(runtime.current().id, agentId, 'review_request', { agent, body });
-    return { recorded: true };
+  tool('request_review', 'Queue a review request for another agent at checkpoint', { agent: z.string(), body: z.string() }, ({ agent, body }) => {
+    return runtime.sendMessage(agentId, agent, 'review', body);
   });
   tool('submit_review', 'Submit cross-agent review', { subject: z.string(), verdict: z.enum(['approve', 'changes_requested']), body: z.string() }, ({ subject, verdict, body }) => runtime.submitReview(agentId, subject, verdict, body));
   tool('get_checkpoint_context', 'Read compact checkpoint state', {}, () => runtime.checkpointContext(agentId));

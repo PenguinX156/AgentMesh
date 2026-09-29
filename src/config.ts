@@ -7,7 +7,7 @@ export const taskSchema = z.object({ id: identifier, title: z.string().min(1), o
 export const phaseSchema = z.object({ id: identifier, title: z.string().min(1), tasks: z.array(taskSchema).min(1), contracts: z.array(z.string()).default([]), validation: z.array(z.array(z.string()).min(1)).default([]) });
 export const planSchema = z.object({
   version: z.literal(1), projectType: z.string(), intensity: z.enum(['low', 'normal', 'high']).default('normal'),
-  agents: z.array(z.object({ id: identifier, harness: z.enum(['codex', 'cursor', 'gemini']), model: z.string().optional(), role: z.string().default('developer') })).min(1),
+  agents: z.array(z.object({ id: identifier, harness: z.enum(['codex', 'cursor', 'gemini']), role: z.string().default('developer') }).strict()).min(1),
   phases: z.array(phaseSchema).min(1), currentPhase: identifier,
   integration: z.object({ branch: z.string().default('agentmesh/integration'), requireReviews: z.boolean().default(true) }).default({ branch: 'agentmesh/integration', requireReviews: true })
 });

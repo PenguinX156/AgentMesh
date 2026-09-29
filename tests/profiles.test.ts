@@ -43,7 +43,7 @@ for (const scenario of scenarios) test(`${scenario.type} fixture integrates and 
     const fake = (id: 'codex' | 'gemini'): HarnessAdapter => ({
       name: id,
       detect: () => ({ installed: true, supportsResume: true, supportsExternalPrompt: true, supportsMCP: true, supportsCancellation: true, supportsPersistentSession: true, supportsStructuredOutput: true }),
-      invoke: async (_prompt, cwd, _model, _session, _signal, _identity, mode) => {
+      invoke: async (_prompt, cwd, _session, _signal, _identity, mode) => {
         if (mode === 'review') return { text: '{"verdict":"approve","body":"Reviewed fixture"}', raw: '' };
         writeFileSync(join(cwd, id === 'codex' ? 'feature.mjs' : 'feature.test.mjs'), id === 'codex' ? scenario.source : scenario.check);
         runSync('git', ['add', '.'], cwd); runSync('git', ['commit', '-m', id], cwd);

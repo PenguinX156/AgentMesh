@@ -47,7 +47,11 @@ export class Git {
     return head;
   }
   changedFiles(foundation: string, branch: string) { return this.call('diff', '--name-only', '-z', `${foundation}..${branch}`).split('\0').filter(Boolean); }
-  diff(foundation: string, branch: string, maxBytes = 60000) { return this.call('diff', '--no-ext-diff', '--unified=3', `${foundation}..${branch}`).slice(0, maxBytes); }
+  diff(foundation: string, branch: string, maxCharacters = 60000) {
+    const output = this.call('diff', '--no-ext-diff', '--unified=3', `${foundation}..${branch}`);
+    if (output.length > maxCharacters) throw new Error(`Diff exceeds the ${maxCharacters}-character automatic review limit; inspect the branch manually or split the change`);
+    return output;
+  }
   assertContracts(foundation: string, branch: string, contracts: string[]) {
     this.assertPaths(this.changedFiles(foundation, branch), contracts, branch);
   }

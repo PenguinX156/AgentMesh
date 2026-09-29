@@ -13,14 +13,14 @@ function mergeMcp(file: string, executable: string) {
   mkdirSync(resolve(file, '..'), { recursive: true });
   writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
 }
-export function installIntegrations(root: string, executable: string) {
+export function installIntegrations(root: string, executable: string, configHome = homedir()) {
   const plan = readPlan(root);
   const results: { agent: string; harness: string; installed: boolean; mcpConfigured: boolean; detail: string }[] = [];
   const configured = new Set<string>();
   for (const agent of plan.agents) {
     const adapter = adapters[agent.harness];
     const installed = adapter.detect().installed;
-    if (!installed) { results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: false, detail: 'CLI not found' }); continue; }
+    if (!installed && agent.harness === 'codex') { results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: false, detail: 'Codex CLI is needed for automatic MCP registration' }); continue; }
     if (configured.has(agent.harness)) { results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: true, detail: 'Shared harness configuration; agent identity is provided at launch' }); continue; }
     try {
       if (agent.harness === 'codex') {
@@ -28,10 +28,10 @@ export function installIntegrations(root: string, executable: string) {
         try { runSync('codex', ['mcp', 'remove', name], root); } catch { /* not configured */ }
         runSync('codex', ['mcp', 'add', name, '--', process.execPath, executable, 'mcp'], root);
         runSync('codex', ['mcp', 'get', name], root);
-      } else if (agent.harness === 'cursor') mergeMcp(join(homedir(), '.cursor', 'mcp.json'), executable);
-      else mergeMcp(join(homedir(), '.gemini', 'settings.json'), executable);
+      } else if (agent.harness === 'cursor') mergeMcp(join(configHome, '.cursor', 'mcp.json'), executable);
+      else mergeMcp(join(configHome, '.gemini', 'settings.json'), executable);
       configured.add(agent.harness);
-      results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: true, detail: 'Configured; verify from harness' });
+      results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: true, detail: installed ? 'MCP configured; verify from harness' : 'MCP configured for manual app use; headless CLI unavailable' });
     } catch (error) { results.push({ agent: agent.id, harness: agent.harness, installed, mcpConfigured: false, detail: String(error) }); }
   }
   return results;

@@ -23,7 +23,7 @@ test('legacy state migrates task keys to phase-scoped identities', () => {
       state.db.prepare('INSERT INTO tasks(id,phase_id,owner,status) VALUES(?,?,?,?)').run('codex-work', 'phase-2', 'codex', 'pending');
       assert.equal(state.tasks('phase-1')[0]!.status, 'complete');
       assert.equal(state.tasks('phase-2')[0]!.status, 'pending');
-      assert.equal((state.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 1);
+      assert.equal((state.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 2);
     } finally { state.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

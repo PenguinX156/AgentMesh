@@ -47,6 +47,9 @@ test('two isolated agents checkpoint, review, and integrate from one foundation'
         if (agent.id === 'codex') assert.equal(runtime.report('codex', 'blocker', 'A later task needs clarification').recorded, true);
       }
       assert.equal(runtime.state.phase('phase-1')?.status, 'review');
+      assert.equal(runtime.sendMessage('codex', 'gemini', 'review', 'Please review my checkpoint').queued, true);
+      assert.ok(runtime.messagesFor('gemini').some(message => message.body.includes('Please review')));
+      assert.throws(() => runtime.submitReview('codex', 'gemini', 'approve', 'x'.repeat(6001)), /Review body/);
       runtime.submitReview('codex', 'gemini', 'approve', 'looks good');
       runtime.submitReview('gemini', 'codex', 'approve', 'looks good');
       const result = await runtime.integrate();
@@ -114,11 +117,16 @@ test('coordinator commits agent work while refusing staged frozen-contract chang
       writeFileSync(join(row.worktree, 'feature.txt'), 'work');
       const commit = runtime.git.commitWorktree(row.worktree, row.branch, [...plan.phases[0]!.contracts, '.agentmesh/collaboration-plan.json'], 'agentmesh: task checkpoint');
       assert.equal(commit, runSync('git', ['rev-parse', 'HEAD'], row.worktree));
+      assert.throws(() => runtime.submitCheckpoint('codex', 'codex-work', { summary: 'x'.repeat(12001) }), /compact context limits/);
       assert.equal(runtime.submitCheckpoint('codex', 'codex-work', { summary: 'done' }).commit, commit);
       writeFileSync(join(row.worktree, 'README.md'), 'modified');
       assert.throws(() => runtime.git.commitWorktree(row.worktree, row.branch, plan.phases[0]!.contracts, 'unsafe'), /Frozen contract changed/);
       assert.equal(runSync('git', ['diff', '--cached', '--name-only'], row.worktree), '');
       assert.equal(runSync('git', ['status', '--short'], row.worktree), 'M README.md');
+      writeFileSync(join(row.worktree, 'README.md'), 'frozen');
+      writeFileSync(join(row.worktree, 'large.txt'), 'x'.repeat(65000));
+      runtime.git.commitWorktree(row.worktree, row.branch, plan.phases[0]!.contracts, 'large change');
+      assert.throws(() => runtime.diff('codex'), /automatic review limit/);
     } finally { runtime.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

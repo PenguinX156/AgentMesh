@@ -24,7 +24,7 @@ test('requested changes resume the owner and require a new review', async () => 
     const fake = (id: 'codex' | 'gemini'): HarnessAdapter => ({
       name: id,
       detect: () => ({ installed: true, supportsResume: true, supportsExternalPrompt: true, supportsMCP: true, supportsCancellation: true, supportsPersistentSession: true, supportsStructuredOutput: true }),
-      invoke: async (prompt, cwd, _model, sessionId, _signal, _identity, mode) => {
+      invoke: async (prompt, cwd, sessionId, _signal, _identity, mode) => {
         if (mode === 'review') {
           if (prompt.includes('Review codex')) { codexReviews++; return { text: JSON.stringify({ verdict: codexReviews === 1 ? 'changes_requested' : 'approve', body: 'Fix or approve' }), raw: '' }; }
           return { text: '{"verdict":"approve","body":"Looks good"}', raw: '' };

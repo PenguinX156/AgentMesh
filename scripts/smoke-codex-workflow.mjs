@@ -13,7 +13,7 @@ try {
   runSync('git', ['config', 'user.name', 'AgentMesh Smoke'], root);
   writeFileSync(join(root, '.gitignore'), '.agentmesh/state.sqlite*\n.agentmesh/worktrees/\n.agentmesh/integration/\n');
   writeFileSync(join(root, 'README.md'), '# AgentMesh live fixture\n');
-  const plan = defaultPlan('cli', [{ id: 'codex', harness: 'codex', model: process.env.AGENTMESH_SMOKE_MODEL ?? 'gpt-5.5', role: 'developer' }]);
+  const plan = defaultPlan('cli', [{ id: 'codex', harness: 'codex', role: 'developer' }]);
   plan.phases = [plan.phases[0]];
   plan.phases[0].tasks[0].instructions = 'Create hello.txt containing exactly hello followed by a newline. Commit the file.';
   plan.phases[0].validation = [['node', '-e', "const fs=require('node:fs'); if(!['68656c6c6f0a','68656c6c6f0d0a'].includes(fs.readFileSync('hello.txt').toString('hex'))) process.exit(1)"]];

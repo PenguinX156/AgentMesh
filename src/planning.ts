@@ -31,7 +31,7 @@ export async function collaboratePlan(root: string) {
         `Give a compact proposal for project type, architecture, phases, ownership, dependencies, frozen contracts, review and validation commands.`,
         `Do not modify files. Limit response to 4000 characters.`
       ].join('\n');
-      const response = await adapters[agent.harness].invoke(prompt, path, agent.model, undefined, undefined, { root, agentId: agent.id }, 'review');
+      const response = await adapters[agent.harness].invoke(prompt, path, undefined, undefined, { root, agentId: agent.id }, 'review');
       return { agent: agent.id, text: response.text.slice(0, 4000) };
     }));
     const lead = worktrees[0]!;
@@ -43,7 +43,7 @@ export async function collaboratePlan(root: string) {
       `Starting plan: ${JSON.stringify(original).slice(0, 20000)}`,
       `Proposals: ${JSON.stringify(proposals).slice(0, 20000)}`
     ].join('\n');
-    const response = await adapters[lead.agent.harness].invoke(prompt, lead.path, lead.agent.model, undefined, undefined, { root, agentId: lead.agent.id }, 'review');
+    const response = await adapters[lead.agent.harness].invoke(prompt, lead.path, undefined, undefined, { root, agentId: lead.agent.id }, 'review');
     const plan = parsePlan(response.text);
     const initial = original.agents.map(a => `${a.id}:${a.harness}`).sort().join(',');
     const proposed = plan.agents.map(a => `${a.id}:${a.harness}`).sort().join(',');

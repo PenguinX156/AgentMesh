@@ -8,7 +8,7 @@ AgentMesh is a local TypeScript runtime for coordinating existing coding agents.
 
 - Node.js 24 or newer
 - Git with worktree support
-- At least one supported coding-agent CLI authenticated for real runs: `codex`, `cursor-agent`, or `gemini`
+- At least one supported harness app with AgentMesh MCP configured for manual runs; headless CLI authentication is needed only for automated runs
 - A Git repository with a clean committed starting state before each phase
 
 ## Local install
@@ -24,13 +24,14 @@ The package contains a `bin` entry for a future `npm install -g agentmesh` relea
 
 ## Run a project
 
-Run these commands from the root of the project that the agents will build:
+To clone an existing GitHub repository and initialize AgentMesh in one step:
 
 ```bash
-agentmesh init --agents codex,cursor,gemini --type cli
+agentmesh init --repo https://github.com/OWNER/REPO.git --agents codex,cursor,gemini
+cd REPO
 ```
 
-`init` creates `.agentmesh/collaboration-plan.json`, `.agentmesh/.gitignore`, and a local SQLite database. It initializes Git if necessary and detects available npm test/build/lint/typecheck scripts for validation. Edit the plan to describe real phase tasks, frozen contract paths, and **at least one validation command for every phase**. The initial profile is a scaffold. Commit the plan and existing project files before proceeding. `start` checks for validation commands before launching a harness.
+For an existing local checkout, run `agentmesh init --agents codex,cursor,gemini` from its root (or pass `--root PATH`). `init` creates `.agentmesh/collaboration-plan.json`, `.agentmesh/.gitignore`, and a local SQLite database. It detects available npm test/build/lint/typecheck scripts for validation. Edit the plan to describe real phase tasks, frozen contract paths, and **at least one validation command for every phase**. The initial profile is a scaffold. Commit the plan and existing project files before starting a phase.
 
 Optionally have the available agents inspect isolated planning worktrees and produce a project-specific draft:
 
@@ -43,11 +44,14 @@ Inspect and commit the new plan. `plan` uses bounded proposals and one synthesis
 ```bash
 agentmesh install-integrations
 agentmesh doctor
-agentmesh start
+agentmesh start --manual
+agentmesh agents
 agentmesh status
 ```
 
-`start` runs the current phase: ready tasks execute in dependency order, AgentMesh commits each agent's verified worktree changes at checkpoint, cross-reviews run when configured, and the integration worktree runs the plan's validation commands. High intensity requires two reviewers per agent when at least three agents participate. If a harness, review, or validation step fails, inspect `status` and the integration record. Use `agentmesh resume` for incomplete or failed phases. Failed integration history is preserved under an `agentmesh/failed/...` branch before retry. `agentmesh advance` fast-forwards the project checkout only after a validated integration, commits the next phase selection, and removes clean old agent worktrees.
+`start --manual` prepares a branch and worktree for each agent and prints their paths. Open each worktree in its harness app and select the model there. The AgentMesh MCP server identifies the agent from the worktree and provides its task, contracts, messages, and checkpoint tools. `submit_checkpoint` commits verified changes on that agent's branch. After all agents checkpoint, use MCP `submit_review` or the CLI review command, then run `agentmesh integrate` and `agentmesh advance`. During independent work, direct messages are reserved for blockers, contract conflicts, and critical discoveries; routine discussion can happen at review. Messages are queued for `get_messages` and checkpoint context without interrupting another agent.
+
+For an automated headless run, use `agentmesh start`. Ready tasks execute in dependency order through the installed harness CLIs, followed by checkpoints, cross-review, and integration validation. AgentMesh passes no model override, so each CLI uses its own configured default. High intensity requires two reviewers per agent when at least three agents participate. If a harness, review, or validation step fails, inspect `status` and the integration record. Use `agentmesh resume` for incomplete or failed phases. Failed integration history is preserved under an `agentmesh/failed/...` branch before retry. `agentmesh advance` fast-forwards the project checkout only after a validated integration, commits the next phase selection, and removes clean old agent worktrees.
 
 Manual checkpoint and review commands are available when a harness cannot provide a usable response:
 
@@ -92,9 +96,11 @@ The plan is a Git-readable JSON file. Example:
 
 Validation commands are argument arrays and run without a shell. Frozen contracts are repository-relative paths; changing one on an agent branch blocks checkpoint submission and integration. The plan file itself is frozen during a phase.
 
+Automatic review refuses diffs larger than 60,000 characters. For a large change, split the task or inspect the agent branch directly and submit a manual review; AgentMesh will not present a clipped diff as complete evidence.
+
 ## Harness integration
 
-`install-integrations` registers the AgentMesh MCP server with installed CLIs. AgentMesh launches each harness with `AGENTMESH_ROOT` and `AGENTMESH_AGENT_ID`, which identify its project and agent to the MCP server. The server can also infer identity from a managed worktree and reports inactive context outside AgentMesh. MCP is for agent-to-runtime state and exceptional messages; the adapter layer launches and resumes CLI sessions. Model names are optional per-agent plan values.
+`install-integrations` registers AgentMesh MCP with Codex when its CLI is available and writes Cursor and Gemini MCP configuration for manual app use even when their separate headless CLIs are absent. Verify each app actually loads the server. AgentMesh passes identity variables for automated CLI launches; in manual app sessions, the MCP server infers identity from the managed worktree branch. It reports inactive context outside AgentMesh. The plan and adapters do not specify model names.
 
 The adapters currently use `codex exec`, Cursor Agent CLI print mode, and Gemini CLI headless mode. They expose capabilities according to documented CLI behavior; real availability is reported by `doctor`. Cursor's editor executable alone is not the separate `cursor-agent` CLI. Gemini's documented plan approval mode is used for read-only planning/review, but has not been verified on this development host.
 
@@ -107,6 +113,6 @@ npm test
 npm pack --dry-run
 ```
 
-The tests cover initialization, MCP handshake, dependency scheduling, separate worktrees, coordinator commits, frozen contracts, cross-review, integration validation, recovery, phase advancement, subprocess cancellation, and Windows batch arguments. Web, plugin, game, and library fixtures run through the integration path. `scripts/smoke-codex.mjs` checks a live Codex call and resume; `scripts/smoke-codex-workflow.mjs` runs a live one-agent checkpoint and integration fixture. Both use a configurable `AGENTMESH_SMOKE_MODEL` (default `gpt-5.5` for this development host).
+The tests cover initialization, MCP handshake and messages, manual worktree startup, dependency scheduling, separate worktrees, coordinator commits, frozen contracts, cross-review, integration validation, recovery, phase advancement, subprocess cancellation, and Windows batch arguments. Web, plugin, game, and library fixtures run through the integration path. `scripts/smoke-github-onboarding.mjs` checks live cloning and initialization. `scripts/smoke-codex.mjs` and `scripts/smoke-codex-workflow.mjs` use the Codex CLI's configured default for optional live checks.
 
 See [Architecture](docs/ARCHITECTURE.md), [Implementation status](docs/IMPLEMENTATION_STATUS.md), and [Production readiness](docs/PRODUCTION_READINESS.md).
