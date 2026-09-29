@@ -12,7 +12,7 @@ cd AgentMesh
 npm install
 npm run build
 npm link
-agentmesh --help
+agentmesh help
 ```
 
 Keep this tool checkout in place. `npm link` points the `agentmesh` command to it. After pulling tool updates, run `npm install` and `npm run build` again. If you move the tool checkout, rebuild/relink it and rerun `agentmesh install-integrations` in each affected project.
