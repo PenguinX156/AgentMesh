@@ -2,6 +2,8 @@
 
 AgentMesh is a local TypeScript runtime for coordinating existing coding agents. It gives each agent its own Git branch and worktree, records task and checkpoint state in SQLite, exposes an MCP collaboration interface, and validates merged work on an integration branch before advancing a phase.
 
+**New to AgentMesh?** Follow the [setup guide](docs/SETUP.md) to install the CLI, initialize a GitHub repository, connect Codex/Cursor/Gemini through MCP, and start a manual collaboration phase.
+
 **Status:** active development. The Git and SQLite workflow, MCP protocol handshake, mocked multi-agent runs, and a single-agent live Codex worktree-to-integration run are tested. Cursor Agent CLI and Gemini CLI are not installed on the development host. See [Production readiness](docs/PRODUCTION_READINESS.md).
 
 ## Requirements
