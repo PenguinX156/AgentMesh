@@ -1,0 +1,33 @@
+{
+  "name": "agentmesh",
+  "version": "0.1.0",
+  "description": "Local collaboration runtime for independent AI coding agents",
+  "type": "module",
+  "bin": {
+    "agentmesh": "./dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "check": "npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "cross-spawn": "^7.0.6",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "dist/src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ]
+}

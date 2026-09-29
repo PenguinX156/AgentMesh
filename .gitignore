@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.agentmesh/state.sqlite*
+.agentmesh/worktrees/
+.agentmesh/integration/
