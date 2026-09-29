@@ -2,7 +2,7 @@
 
 AgentMesh is a local TypeScript runtime for coordinating existing coding agents. It gives each agent its own Git branch and worktree, records task and checkpoint state in SQLite, exposes an MCP collaboration interface, and validates merged work on an integration branch before advancing a phase.
 
-**Status:** active development. The Git and SQLite workflow, MCP protocol handshake, and mocked multi-agent runs are tested. A real Codex model call is currently blocked by the model entitlement of the CLI login on the development host. Cursor Agent CLI and Gemini CLI are not installed there. See [Production readiness](docs/PRODUCTION_READINESS.md).
+**Status:** active development. The Git and SQLite workflow, MCP protocol handshake, mocked multi-agent runs, and a single-agent live Codex worktree-to-integration run are tested. Cursor Agent CLI and Gemini CLI are not installed on the development host. See [Production readiness](docs/PRODUCTION_READINESS.md).
 
 ## Requirements
 
@@ -47,7 +47,7 @@ agentmesh start
 agentmesh status
 ```
 
-`start` runs the current phase: ready tasks execute in dependency order, agents commit independently, checkpoints are recorded, cross-reviews run when configured, and the integration worktree runs the plan's validation commands. High intensity requires two reviewers per agent when at least three agents participate. If a harness, review, or validation step fails, inspect `status` and the integration record. Use `agentmesh resume` for incomplete or failed phases. Failed integration history is preserved under an `agentmesh/failed/...` branch before retry. `agentmesh advance` fast-forwards the project checkout only after a validated integration, commits the next phase selection, and removes clean old agent worktrees.
+`start` runs the current phase: ready tasks execute in dependency order, AgentMesh commits each agent's verified worktree changes at checkpoint, cross-reviews run when configured, and the integration worktree runs the plan's validation commands. High intensity requires two reviewers per agent when at least three agents participate. If a harness, review, or validation step fails, inspect `status` and the integration record. Use `agentmesh resume` for incomplete or failed phases. Failed integration history is preserved under an `agentmesh/failed/...` branch before retry. `agentmesh advance` fast-forwards the project checkout only after a validated integration, commits the next phase selection, and removes clean old agent worktrees.
 
 Manual checkpoint and review commands are available when a harness cannot provide a usable response:
 
@@ -98,7 +98,7 @@ Validation commands are argument arrays and run without a shell. Frozen contract
 
 The adapters currently use `codex exec`, Cursor Agent CLI print mode, and Gemini CLI headless mode. They expose capabilities according to documented CLI behavior; real availability is reported by `doctor`. Cursor's editor executable alone is not the separate `cursor-agent` CLI. Gemini's documented plan approval mode is used for read-only planning/review, but has not been verified on this development host.
 
-AgentMesh does not provide an OS sandbox. Headless harnesses may run commands and modify files in their isolated worktrees. Run only trusted agents, review validation commands, and use the harnesses' own permission settings where appropriate. Git isolation protects agents from concurrent file changes; it does not confine their operating-system access.
+AgentMesh invokes Codex with its workspace-write sandbox for work and read-only sandbox for planning and review. It performs Git commits itself because Git worktree metadata lives outside the agent's checkout. Cursor and Gemini use their documented headless permission modes; AgentMesh cannot guarantee OS-level confinement for those harnesses. Review validation commands and use trusted agents. Git isolation protects agents from concurrent file changes but does not itself confine operating-system access.
 
 ## Development
 
@@ -107,6 +107,6 @@ npm test
 npm pack --dry-run
 ```
 
-The tests cover initialization, MCP handshake, dependency scheduling, separate worktrees, frozen contracts, cross-review, integration validation, recovery, phase advancement, subprocess cancellation, and Windows batch arguments. Web, plugin, game, and library fixtures run through the integration path. `scripts/smoke-codex.mjs` is an optional live CLI check.
+The tests cover initialization, MCP handshake, dependency scheduling, separate worktrees, coordinator commits, frozen contracts, cross-review, integration validation, recovery, phase advancement, subprocess cancellation, and Windows batch arguments. Web, plugin, game, and library fixtures run through the integration path. `scripts/smoke-codex.mjs` checks a live Codex call and resume; `scripts/smoke-codex-workflow.mjs` runs a live one-agent checkpoint and integration fixture. Both use a configurable `AGENTMESH_SMOKE_MODEL` (default `gpt-5.5` for this development host).
 
 See [Architecture](docs/ARCHITECTURE.md), [Implementation status](docs/IMPLEMENTATION_STATUS.md), and [Production readiness](docs/PRODUCTION_READINESS.md).

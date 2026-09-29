@@ -12,6 +12,6 @@ try {
   const project = join(fixture, 'project'); mkdirSync(project);
   const result = JSON.parse(runSync(process.execPath, [cli, 'init', '--root', project, '--type', 'library'], project));
   const checks = JSON.parse(runSync(process.execPath, [cli, 'doctor', '--root', project], project));
-  if (!result.plan || checks.database.integrity_check !== 'ok') throw new Error('Installed package smoke failed');
+  if (!result.plan || checks.database.ok !== true || checks.database.detail !== 'ok') throw new Error('Installed package smoke failed');
   console.log(JSON.stringify({ ok: true, archive, initialized: result.plan }));
 } finally { rmSync(fixture, { recursive: true, force: true }); }

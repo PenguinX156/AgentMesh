@@ -46,15 +46,27 @@ export class Git {
     if (this.call('merge-base', head, foundation) !== foundation) throw new Error(`${branch} does not descend from the phase foundation`);
     return head;
   }
-  changedFiles(foundation: string, branch: string) { return this.call('diff', '--name-only', `${foundation}..${branch}`).split(/\r?\n/).filter(Boolean); }
+  changedFiles(foundation: string, branch: string) { return this.call('diff', '--name-only', '-z', `${foundation}..${branch}`).split('\0').filter(Boolean); }
   diff(foundation: string, branch: string, maxBytes = 60000) { return this.call('diff', '--no-ext-diff', '--unified=3', `${foundation}..${branch}`).slice(0, maxBytes); }
   assertContracts(foundation: string, branch: string, contracts: string[]) {
-    const changed = this.changedFiles(foundation, branch);
+    this.assertPaths(this.changedFiles(foundation, branch), contracts, branch);
+  }
+  private assertPaths(changed: string[], contracts: string[], subject: string) {
     for (const contract of contracts) {
       const normalized = contract.replaceAll('\\', '/').replace(/\/$/, '');
       if (!normalized || normalized === '.' || isAbsolute(contract) || /^[a-zA-Z]:/.test(contract) || normalized.split('/').includes('..') || normalized.startsWith('/')) throw new Error(`Unsafe contract path: ${contract}`);
-      if (changed.some(file => file === normalized || file.startsWith(`${normalized}/`))) throw new Error(`Frozen contract changed on ${branch}: ${contract}`);
+      if (changed.some(file => file === normalized || file.startsWith(`${normalized}/`))) throw new Error(`Frozen contract changed on ${subject}: ${contract}`);
     }
+  }
+  commitWorktree(path: string, branch: string, contracts: string[], message: string) {
+    if (runSync('git', ['branch', '--show-current'], path) !== branch) throw new Error(`Worktree is not on ${branch}`);
+    if (!runSync('git', ['status', '--porcelain'], path)) return runSync('git', ['rev-parse', 'HEAD'], path);
+    runSync('git', ['add', '-A'], path);
+    const staged = runSync('git', ['diff', '--cached', '--name-only', '-z'], path).split('\0').filter(Boolean);
+    try { this.assertPaths(staged, contracts, branch); }
+    catch (error) { runSync('git', ['reset', '--mixed'], path); throw error; }
+    if (staged.length) runSync('git', ['commit', '-m', message], path);
+    return runSync('git', ['rev-parse', 'HEAD'], path);
   }
   integrate(branches: string[], foundation: string, integration: string): string {
     this.ensureRef(integration);

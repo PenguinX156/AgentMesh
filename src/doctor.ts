@@ -25,7 +25,7 @@ export function doctor(root: string) {
   if (existsSync(planPath(root))) {
     try { checks.configuredAgents = readPlan(root).agents; }
     catch (error) { checks.plan = { ok: false, detail: String(error) }; }
-    try { const state = new State(root); try { checks.database = state.db.prepare('PRAGMA integrity_check').get(); } finally { state.close(); } }
+    try { const state = new State(root); try { const result = state.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }; checks.database = { ok: result.integrity_check === 'ok', detail: result.integrity_check }; } finally { state.close(); } }
     catch (error) { checks.database = { ok: false, detail: String(error) }; }
     try { checks.worktrees = { ok: true, detail: new Git(root).call('worktree', 'list', '--porcelain').slice(0, 3000) }; }
     catch (error) { checks.worktrees = { ok: false, detail: String(error) }; }

@@ -64,13 +64,15 @@ export class Runtime {
           `Task: ${JSON.stringify(task)}.`,
           `Frozen contracts: ${JSON.stringify([...phase.contracts, '.agentmesh/collaboration-plan.json'])}. Do not change these.`,
           failure ? `Last integration failure: ${failure.output.slice(0, 5000)}` : '',
-          'Work independently. Commit all important work before completing.',
+          'Work independently in this checkout. AgentMesh commits worktree changes at checkpoint; do not run git add or git commit.',
           'Only communicate early for blockers, contract conflicts, or critical discoveries.',
           'At completion, give a compact report of changes, tests, decisions, and risks.'
         ].filter(Boolean).join('\n');
         this.state.db.prepare("UPDATE tasks SET status='working' WHERE phase_id=? AND id=?").run(phase.id, task.id);
         const result = await adapter.invoke(prompt, row.worktree, agent.model, row.session_id ?? undefined, signal, { root: this.root, agentId: agent.id });
         if (result.sessionId) this.state.db.prepare('UPDATE agents SET session_id=? WHERE id=?').run(result.sessionId, agent.id);
+        if (/^\s*blocked\b/i.test(result.text)) { this.report(agent.id, 'blocker', result.text.slice(0, 12000)); throw new Error(`${agent.id} reported a blocker`); }
+        this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${task.id} checkpoint`);
         if (this.state.tasks(phase.id).find(t => t.id === task.id)?.status !== 'complete') this.submitCheckpoint(agent.id, task.id, { summary: result.text.slice(0, 12000), tests: [], risks: [] });
         return { agent: agent.id, task: task.id, result: result.text };
       }));
@@ -111,7 +113,7 @@ export class Runtime {
     if (!this.plan.agents.some(a => a.id === agent)) throw new Error('Unknown agent');
     const phase = this.current();
     this.state.event(phase.id, agent, kind, { body });
-    if (kind === 'blocker') for (const task of this.getTask(agent)) this.updateTask(agent, task.id, 'blocked');
+    if (kind === 'blocker') for (const task of this.state.tasks(phase.id).filter(task => task.owner === agent && task.status !== 'complete')) this.updateTask(agent, task.id, 'blocked');
     return { recorded: true, synchronizationRequired: kind !== 'decision' };
   }
   diff(agentId: string) {
@@ -174,6 +176,9 @@ export class Runtime {
     return results;
   }
   async runPhase(signal?: AbortSignal) {
+    return this.state.withOrchestrationLock('run', () => this.runPhaseUnlocked(signal));
+  }
+  private async runPhaseUnlocked(signal?: AbortSignal) {
     if (!this.current().validation.length) throw new Error('Configure at least one current-phase validation command before starting agents');
     this.begin();
     const phaseId = this.current().id;
@@ -206,9 +211,11 @@ export class Runtime {
     for (const review of reviews) if (!latest.has(review.reviewer)) latest.set(review.reviewer, review);
     if (![...latest.values()].some(review => review.verdict === 'changes_requested')) throw new Error('No requested changes for this agent');
     const row = this.state.agents().find(a => a.id === agentId)!;
-    const prompt = `Address this checkpoint review in your own worktree. Commit fixes and report tests and risks. Keep frozen contracts unchanged.\n${JSON.stringify(this.checkpointContext(agentId))}`;
+    const prompt = `Address this checkpoint review in your own worktree. AgentMesh commits worktree changes after you finish; do not run git add or git commit. Report tests and risks. Keep frozen contracts unchanged.\n${JSON.stringify(this.checkpointContext(agentId))}`;
     const response = await adapters[agent.harness].invoke(prompt, row.worktree, agent.model, row.session_id ?? undefined, undefined, { root: this.root, agentId });
     if (response.sessionId) this.state.db.prepare('UPDATE agents SET session_id=? WHERE id=?').run(response.sessionId, agentId);
+    if (/^\s*blocked\b/i.test(response.text)) { this.report(agentId, 'blocker', response.text.slice(0, 12000)); throw new Error(`${agentId} reported a blocker`); }
+    this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${agentId} review fixes`);
     const reports = this.getTask(agentId).map(task => this.submitCheckpoint(agentId, task.id, { summary: response.text.slice(0, 12000) }));
     return { agent: agentId, reports };
   }

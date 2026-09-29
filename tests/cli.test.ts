@@ -23,7 +23,7 @@ test('CLI initializes a clean project, doctor reads state, and MCP answers', asy
     const checks = JSON.parse(doctor.stdout);
     assert.equal(checks.plan.ok, true);
     assert.equal(checks.node.ok, true);
-    assert.equal(checks.database.integrity_check, 'ok');
+    assert.deepEqual(checks.database, { ok: true, detail: 'ok' });
     const client = new Client({ name: 'agentmesh-test', version: '1.0.0' });
     const transport = new StdioClientTransport({ command: process.execPath, args: [cli, 'mcp'], env: { ...process.env, AGENTMESH_ROOT: root, AGENTMESH_AGENT_ID: 'codex' } as Record<string, string> });
     try {

@@ -44,6 +44,7 @@ test('two isolated agents checkpoint, review, and integrate from one foundation'
         runSync('git', ['add', '.'], agent.worktree);
         runSync('git', ['commit', '-m', `work by ${agent.id}`], agent.worktree);
         runtime.submitCheckpoint(agent.id, `${agent.id}-work`, { summary: 'done' });
+        if (agent.id === 'codex') assert.equal(runtime.report('codex', 'blocker', 'A later task needs clarification').recorded, true);
       }
       assert.equal(runtime.state.phase('phase-1')?.status, 'review');
       runtime.submitReview('codex', 'gemini', 'approve', 'looks good');
@@ -90,6 +91,34 @@ test('frozen contracts stop checkpoint submission', () => {
       writeFileSync(join(path, 'README.md'), 'changed');
       runSync('git', ['add', '.'], path); runSync('git', ['commit', '-m', 'bad'], path);
       assert.throws(() => runtime.submitCheckpoint('codex', 'codex-work', { summary: 'bad' }), /Frozen contract changed/);
+    } finally { runtime.close(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('coordinator commits agent work while refusing staged frozen-contract changes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agentmesh-coordinator-commit-'));
+  try {
+    runSync('git', ['init'], root);
+    runSync('git', ['config', 'user.email', 'test@example.com'], root);
+    runSync('git', ['config', 'user.name', 'Test'], root);
+    writeFileSync(join(root, '.gitignore'), '.agentmesh/state.sqlite*\n.agentmesh/worktrees/\n.agentmesh/integration/\n');
+    writeFileSync(join(root, 'README.md'), 'frozen');
+    const plan = defaultPlan('cli', [{ id: 'codex', harness: 'codex', role: 'code' }]);
+    plan.phases[0]!.contracts = ['README.md'];
+    writePlan(root, plan);
+    runSync('git', ['add', '.'], root); runSync('git', ['commit', '-m', 'base'], root);
+    const runtime = new Runtime(root);
+    try {
+      runtime.begin();
+      const row = runtime.state.agents()[0]!;
+      writeFileSync(join(row.worktree, 'feature.txt'), 'work');
+      const commit = runtime.git.commitWorktree(row.worktree, row.branch, [...plan.phases[0]!.contracts, '.agentmesh/collaboration-plan.json'], 'agentmesh: task checkpoint');
+      assert.equal(commit, runSync('git', ['rev-parse', 'HEAD'], row.worktree));
+      assert.equal(runtime.submitCheckpoint('codex', 'codex-work', { summary: 'done' }).commit, commit);
+      writeFileSync(join(row.worktree, 'README.md'), 'modified');
+      assert.throws(() => runtime.git.commitWorktree(row.worktree, row.branch, plan.phases[0]!.contracts, 'unsafe'), /Frozen contract changed/);
+      assert.equal(runSync('git', ['diff', '--cached', '--name-only'], row.worktree), '');
+      assert.equal(runSync('git', ['status', '--short'], row.worktree), 'M README.md');
     } finally { runtime.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

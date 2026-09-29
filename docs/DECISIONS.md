@@ -6,3 +6,4 @@
 - **Reviews are commit-bound.** An approval cannot authorize later, unreviewed commits.
 - **Validation is required.** Empty validation arrays may exist in a newly initialized scaffold, but integration refuses them.
 - **Recovery preserves history.** Failed integration commits receive a backup ref before the owned integration checkout resets to the phase foundation.
+- **Only one orchestration run may launch agents at a time.** A SQLite lock prevents concurrent `start`/`resume` calls and reclaims a lock after its owning process exits.
