@@ -1,6 +1,6 @@
 # Set up AgentMesh for a project
 
-AgentMesh is a local CLI and collaboration runtime that exposes a **stdio MCP server**. It is not a separate Codex, Cursor, or Gemini plugin. The MCP server gives each agent tools for reading its task, exchanging messages, submitting checkpoints, and reviewing another agent's work. Each agent still writes code through its own harness app and uses the model selected there. AgentMesh stores coordination state locally and uses Git branches and worktrees to isolate code changes.
+AgentMesh is a local CLI and collaboration runtime that exposes a **stdio MCP server**. It is not a separate Codex, Cursor, or Gemini plugin. Install the tool once on your machine, then add its small `.agentmesh` configuration to each project. Do not clone the AgentMesh tool repository inside the project repository; nested Git repositories complicate normal project commits and worktrees. The MCP server gives each agent tools for reading its task, exchanging messages, submitting checkpoints, and reviewing another agent's work. Each agent still writes code through its own harness app and uses the model selected there.
 
 ## 1. Install the AgentMesh CLI
 
@@ -22,17 +22,17 @@ Keep this tool checkout in place. `npm link` points the `agentmesh` command to i
 Run this from the parent directory where you want the project clone. Substitute the repository URL and include only the harnesses you will use; repeated names create multiple agents of the same harness. Git authentication must already work if the repository is private.
 
 ```powershell
-agentmesh init --repo https://github.com/OWNER/PROJECT.git --agents codex,cursor,gemini
+agentmesh setup --repo https://github.com/OWNER/PROJECT.git --agents codex,cursor,gemini
 cd PROJECT
 ```
 
 If the repository is **already cloned**, run this from that checkout instead:
 
 ```powershell
-agentmesh init --agents codex,cursor,gemini
+agentmesh setup --agents codex,cursor,gemini
 ```
 
-Initialization creates `.agentmesh/collaboration-plan.json` and local SQLite state. Edit the JSON plan before starting:
+`setup` clones or uses the checkout, creates `.agentmesh/collaboration-plan.json` and local SQLite state, and registers the selected harnesses with the MCP server. Check its per-harness results. Edit the JSON plan before starting:
 
 - Give each agent a useful `role` and each task a specific `title`, `owner`, and `instructions`. Task owners must match agent IDs in the plan.
 - Set `dependsOn` when a task must wait for another task's checkpoint. Independent tasks can proceed in separate worktrees.
@@ -54,11 +54,10 @@ If the checkout has other uncommitted project files, review and commit them too 
 From the **project root**, run:
 
 ```powershell
-agentmesh install-integrations
 agentmesh doctor
 ```
 
-`install-integrations` uses the agent roster in the plan. It registers a local `agentmesh` MCP server with each listed harness; the server command points to your built AgentMesh CLI. Existing unrelated Cursor and Gemini configuration entries are preserved. Check the command's per-harness results and verify the server is actually available in each app.
+`setup` already runs `install-integrations`. You can rerun `agentmesh install-integrations` if a connection needs repair or the tool checkout moves. It registers a local `agentmesh` MCP server with each listed harness; the server command points to your built AgentMesh CLI. Existing unrelated Cursor and Gemini configuration entries are preserved. Verify the server is actually available in each app.
 
 | Harness | What AgentMesh configures | How to verify |
 | --- | --- | --- |

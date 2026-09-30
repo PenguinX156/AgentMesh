@@ -2,7 +2,7 @@
 
 AgentMesh is a local TypeScript runtime for coordinating existing coding agents. It gives each agent its own Git branch and worktree, records task and checkpoint state in SQLite, exposes an MCP collaboration interface, and validates merged work on an integration branch before advancing a phase.
 
-**New to AgentMesh?** Follow the [setup guide](docs/SETUP.md) to install the CLI, initialize a GitHub repository, connect Codex/Cursor/Gemini through MCP, and start a manual collaboration phase.
+**New to AgentMesh?** Follow the [setup guide](docs/SETUP.md) to install the CLI once, set up a GitHub repository, connect Codex/Cursor/Gemini through MCP, and start a manual collaboration phase. Keep the AgentMesh tool checkout separate from the project repository; setup adds only `.agentmesh` project files.
 
 **Status:** active development. The Git and SQLite workflow, MCP protocol handshake, mocked multi-agent runs, and a single-agent live Codex worktree-to-integration run are tested. Cursor Agent CLI and Gemini CLI are not installed on the development host. See [Production readiness](docs/PRODUCTION_READINESS.md).
 
@@ -26,14 +26,14 @@ The package contains a `bin` entry for a future `npm install -g agentmesh` relea
 
 ## Run a project
 
-To clone an existing GitHub repository and initialize AgentMesh in one step:
+To clone an existing GitHub repository, initialize AgentMesh, and register MCP connections for the selected harnesses in one step:
 
 ```bash
-agentmesh init --repo https://github.com/OWNER/REPO.git --agents codex,cursor,gemini
+agentmesh setup --repo https://github.com/OWNER/REPO.git --agents codex,cursor,gemini
 cd REPO
 ```
 
-For an existing local checkout, run `agentmesh init --agents codex,cursor,gemini` from its root (or pass `--root PATH`). `init` creates `.agentmesh/collaboration-plan.json`, `.agentmesh/.gitignore`, and a local SQLite database. It detects available npm test/build/lint/typecheck scripts for validation. Edit the plan to describe real phase tasks, frozen contract paths, and **at least one validation command for every phase**. The initial profile is a scaffold. Commit the plan and existing project files before starting a phase.
+For an existing local checkout, run `agentmesh setup --agents codex,cursor,gemini` from its root (or pass `--root PATH`). `setup` creates `.agentmesh/collaboration-plan.json`, `.agentmesh/.gitignore`, and a local SQLite database, then runs harness MCP registration. It detects available npm test/build/lint/typecheck scripts for validation. Edit the plan to describe real phase tasks, frozen contract paths, and **at least one validation command for every phase**. The initial profile is a scaffold. Commit the plan and existing project files before starting a phase. `agentmesh init` remains available when you only want to initialize a project without registering integrations.
 
 Optionally have the available agents inspect isolated planning worktrees and produce a project-specific draft:
 
@@ -44,7 +44,6 @@ agentmesh plan
 Inspect and commit the new plan. `plan` uses bounded proposals and one synthesis pass; it does not silently execute the draft. A failed or invalid synthesis leaves the committed plan intact.
 
 ```bash
-agentmesh install-integrations
 agentmesh doctor
 agentmesh start --manual
 agentmesh agents
@@ -102,7 +101,7 @@ Automatic review refuses diffs larger than 60,000 characters. For a large change
 
 ## Harness integration
 
-`install-integrations` registers AgentMesh MCP with Codex when its CLI is available and writes Cursor and Gemini MCP configuration for manual app use even when their separate headless CLIs are absent. Verify each app actually loads the server. AgentMesh passes identity variables for automated CLI launches; in manual app sessions, the MCP server infers identity from the managed worktree branch. It reports inactive context outside AgentMesh. The plan and adapters do not specify model names.
+`setup` runs `install-integrations`; you can rerun `agentmesh install-integrations` after moving or rebuilding the tool. Registration adds AgentMesh MCP to Codex when its CLI is available and writes Cursor and Gemini MCP configuration for manual app use even when their separate headless CLIs are absent. Verify each app actually loads the server. AgentMesh passes identity variables for automated CLI launches; in manual app sessions, the MCP server infers identity from the managed worktree branch. It reports inactive context outside AgentMesh. The plan and adapters do not specify model names.
 
 The adapters currently use `codex exec`, Cursor Agent CLI print mode, and Gemini CLI headless mode. They expose capabilities according to documented CLI behavior; real availability is reported by `doctor`. Cursor's editor executable alone is not the separate `cursor-agent` CLI. Gemini's documented plan approval mode is used for read-only planning/review, but has not been verified on this development host.
 

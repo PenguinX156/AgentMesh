@@ -1,6 +1,9 @@
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { run } from './process.js';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { adapters, type HarnessName } from './harness.js';
+import { defaultPlan, inferProjectType, planPath, writePlan } from './config.js';
+import { State } from './state.js';
+import { run, runSync } from './process.js';
 
 export function githubRepoName(remote: string): string {
   let owner: string, name: string;
@@ -28,4 +31,30 @@ export async function cloneGithubRepo(remote: string, target: string): Promise<v
     timeoutMs: 5 * 60 * 1000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
   });
+}
+
+export async function initializeProject(root: string, names: HarnessName[], remote?: string, projectType?: string) {
+  root = resolve(root);
+  if (!names.length) throw new Error('Choose at least one agent harness');
+  for (const name of names) if (!adapters[name]) throw new Error(`Unknown harness: ${name}`);
+  if (remote) await cloneGithubRepo(remote, root);
+  if (existsSync(planPath(root))) throw new Error('Collaboration plan already exists');
+  if (!existsSync(join(root, '.git'))) runSync('git', ['init'], root);
+  const counts = new Map<string, number>();
+  const agents = names.map(name => {
+    const n = (counts.get(name) ?? 0) + 1;
+    counts.set(name, n);
+    return { id: n === 1 ? name : `${name}-${n}`, harness: name, role: 'developer' };
+  });
+  const plan = defaultPlan(projectType ?? inferProjectType(root), agents);
+  const packageFile = join(root, 'package.json');
+  if (existsSync(packageFile)) {
+    const scripts = JSON.parse(readFileSync(packageFile, 'utf8')).scripts ?? {};
+    const validation = ['test', 'build', 'lint', 'typecheck'].filter(name => typeof scripts[name] === 'string').map(name => ['npm', 'run', name]);
+    for (const phase of plan.phases) phase.validation = validation;
+  }
+  writePlan(root, plan);
+  writeFileSync(join(root, '.agentmesh', '.gitignore'), 'state.sqlite*\nworktrees/\nintegration/\n');
+  const state = new State(root); state.close();
+  return { root, plan: planPath(root), agents, validation: plan.phases[0]?.validation };
 }

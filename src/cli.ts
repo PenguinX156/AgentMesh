@@ -1,17 +1,14 @@
 #!/usr/bin/env node
-import { existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultPlan, inferProjectType, planPath, writePlan } from './config.js';
-import { adapters, type HarnessName } from './harness.js';
+import { type HarnessName } from './harness.js';
 import { Runtime } from './runtime.js';
-import { State } from './state.js';
 import { installIntegrations } from './install.js';
 import { serveMcp } from './mcp.js';
-import { runSync } from './process.js';
 import { doctor } from './doctor.js';
 import { collaboratePlan } from './planning.js';
-import { cloneGithubRepo, githubRepoName } from './onboarding.js';
+import { githubRepoName, initializeProject } from './onboarding.js';
 
 const args = process.argv.slice(2);
 const command = args.shift() ?? 'help';
@@ -23,31 +20,19 @@ function option(name: string, fallback?: string) {
   return value;
 }
 function output(value: unknown) { process.stdout.write(JSON.stringify(value, null, 2) + '\n'); }
-function usage() { console.log('agentmesh init [--repo URL] [--root PATH] [--agents codex,cursor,gemini]|plan|install-integrations|doctor|start [--manual]|status|agents|phase|checkpoint|review|fix|integrate|revise-plan|advance|resume|recover|mcp'); }
+function usage() { console.log('agentmesh setup [--repo URL] [--root PATH] [--agents codex,cursor,gemini]|init [--repo URL] [--root PATH] [--agents codex,cursor,gemini]|plan|install-integrations|doctor|start [--manual]|status|agents|phase|checkpoint|review|fix|integrate|revise-plan|advance|resume|recover|mcp'); }
 async function main() {
-  const remote = command === 'init' ? option('repo') : undefined;
+  const remote = command === 'init' || command === 'setup' ? option('repo') : undefined;
   const root = resolve(option('root', remote ? join(process.cwd(), githubRepoName(remote)) : process.env.AGENTMESH_ROOT ?? process.cwd())!);
   if (command === 'help') return usage();
   if (command === 'mcp') return serveMcp(option('root') ?? process.env.AGENTMESH_ROOT, option('agent') ?? process.env.AGENTMESH_AGENT_ID);
-  if (command === 'init') {
-    if (remote) await cloneGithubRepo(remote, root);
-    if (existsSync(planPath(root))) throw new Error('Collaboration plan already exists');
-    if (!existsSync(join(root, '.git'))) runSync('git', ['init'], root);
+  if (command === 'init' || command === 'setup') {
     const names = (option('agents', 'codex') ?? 'codex').split(',') as HarnessName[];
-    for (const name of names) if (!adapters[name]) throw new Error(`Unknown harness: ${name}`);
-    const counts = new Map<string, number>();
-    const agents = names.map(name => { const n = (counts.get(name) ?? 0) + 1; counts.set(name, n); return { id: n === 1 ? name : `${name}-${n}`, harness: name, role: 'developer' }; });
-    const plan = defaultPlan(option('type', inferProjectType(root))!, agents);
-    const packageFile = join(root, 'package.json');
-    if (existsSync(packageFile)) {
-      const scripts = JSON.parse(readFileSync(packageFile, 'utf8')).scripts ?? {};
-      const validation = ['test', 'build', 'lint', 'typecheck'].filter(name => typeof scripts[name] === 'string').map(name => ['npm', 'run', name]);
-      for (const phase of plan.phases) phase.validation = validation;
-    }
-    writePlan(root, plan);
-    writeFileSync(join(root, '.agentmesh', '.gitignore'), 'state.sqlite*\nworktrees/\nintegration/\n');
-    const state = new State(root); state.close();
-    output({ root, plan: planPath(root), agents, validation: plan.phases[0]?.validation, next: 'Review validation commands, commit the plan, run install-integrations, then start --manual or start' });
+    const result = await initializeProject(root, names, remote, option('type'));
+    const integrations = command === 'setup' ? installIntegrations(root, fileURLToPath(import.meta.url)) : undefined;
+    output({ ...result, ...(integrations ? { integrations } : {}), next: command === 'setup'
+      ? 'Review and commit the plan, verify MCP tools in each harness, then start --manual or start'
+      : 'Review validation commands, commit the plan, run install-integrations, then start --manual or start' });
     return;
   }
   if (command === 'doctor') return output(doctor(root));
