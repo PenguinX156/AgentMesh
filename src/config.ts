@@ -7,8 +7,8 @@ export const taskSchema = z.object({ id: identifier, title: z.string().min(1), o
 export const phaseSchema = z.object({ id: identifier, title: z.string().min(1), tasks: z.array(taskSchema).min(1), contracts: z.array(z.string()).default([]), validation: z.array(z.array(z.string()).min(1)).default([]) });
 export const planSchema = z.object({
   version: z.literal(1), projectType: z.string(), intensity: z.enum(['low', 'normal', 'high']).default('normal'),
-  agents: z.array(z.object({ id: identifier, harness: z.enum(['codex', 'cursor', 'gemini']), role: z.string().default('developer') }).strict()).min(1),
-  phases: z.array(phaseSchema).min(1), currentPhase: identifier,
+  agents: z.array(z.object({ id: identifier, harness: z.enum(['codex', 'cursor', 'gemini', 'antigravity']), role: z.string().default('developer') }).strict()).min(1),
+  phases: z.array(phaseSchema).min(1), currentPhase: identifier, completed: z.boolean().default(false),
   integration: z.object({ branch: z.string().default('agentmesh/integration'), requireReviews: z.boolean().default(true) }).default({ branch: 'agentmesh/integration', requireReviews: true })
 });
 export type Plan = z.infer<typeof planSchema>;
@@ -60,7 +60,7 @@ export function defaultPlan(projectType: string, agents: Plan['agents']): Plan {
 }
 export function inferProjectType(root: string): string {
   if (existsSync(join(root, 'android')) || existsSync(join(root, 'ios'))) return 'mobile-app';
-  if (existsSync(join(root, 'vite.config.ts')) || existsSync(join(root, 'next.config.js'))) return 'web-app';
+  if (['vite.config.ts', 'vite.config.js', 'next.config.js', 'next.config.mjs', 'next.config.ts'].some(file => existsSync(join(root, file)))) return 'web-app';
   if (existsSync(join(root, 'plugin.json'))) return 'plugin';
   return 'cli';
 }

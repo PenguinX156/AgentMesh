@@ -39,7 +39,7 @@ test('requested changes resume the owner and require a new review', async () => 
     const runtime = new Runtime(root);
     try {
       const result = await runtime.runPhase();
-      assert.ok(result.integration);
+      assert.ok(result.integration, JSON.stringify(result));
       assert.equal(codexReviews, 2);
       assert.equal(resumedFix, true);
       assert.equal(runSync('git', ['show', 'agentmesh/integration:codex-fix.txt'], root), 'fixed');

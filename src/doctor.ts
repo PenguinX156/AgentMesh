@@ -7,7 +7,7 @@ import { State } from './state.js';
 import { Git } from './git.js';
 import { runSync } from './process.js';
 
-function probe(command: string, args: string[], root: string) { try { return { ok: true, detail: runSync(command, args, root).slice(0, 2000) }; } catch (error) { return { ok: false, detail: String(error) }; } }
+function probe(command: string, args: string[], root: string) { try { return { ok: true, detail: runSync(command, args, existsSync(root) ? root : process.cwd()).slice(0, 2000) }; } catch (error) { return { ok: false, detail: String(error) }; } }
 export function doctor(root: string) {
   const checks: Record<string, unknown> = {};
   checks.node = { ok: Number(process.versions.node.split('.')[0]) >= 24, detail: process.version };
@@ -27,12 +27,12 @@ export function doctor(root: string) {
     catch (error) { checks.plan = { ok: false, detail: String(error) }; }
     try { const state = new State(root); try { const result = state.db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }; checks.database = { ok: result.integrity_check === 'ok', detail: result.integrity_check }; } finally { state.close(); } }
     catch (error) { checks.database = { ok: false, detail: String(error) }; }
-    try { checks.worktrees = { ok: true, detail: new Git(root).call('worktree', 'list', '--porcelain').slice(0, 3000) }; }
+    try { const git = new Git(root); checks.worktrees = { ok: true, detail: git.call('worktree', 'list', '--porcelain').slice(0, 3000) }; try { git.requireAuthor(); checks.gitAuthor = { ok: true }; } catch (error) { checks.gitAuthor = { ok: false, detail: String(error) }; } }
     catch (error) { checks.worktrees = { ok: false, detail: String(error) }; }
   }
   const codexConfig = probe('codex', ['mcp', 'list'], root);
   checks.codexMcp = { ok: codexConfig.ok && codexConfig.detail.includes('agentmesh'), detail: codexConfig.detail };
-  for (const [name, file] of [['cursorMcp', join(homedir(), '.cursor', 'mcp.json')], ['geminiMcp', join(homedir(), '.gemini', 'settings.json')]] as const) {
+  for (const [name, file] of [['cursorMcp', join(homedir(), '.cursor', 'mcp.json')], ['geminiMcp', join(homedir(), '.gemini', 'settings.json')], ['antigravityMcp', join(homedir(), '.gemini', 'config', 'mcp_config.json')]] as const) {
     try { const value = JSON.parse(readFileSync(file, 'utf8')); checks[name] = { ok: Boolean(value.mcpServers?.agentmesh), path: file }; }
     catch { checks[name] = { ok: false, path: file }; }
   }

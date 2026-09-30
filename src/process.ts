@@ -17,7 +17,8 @@ export async function run(command: string, args: string[], cwd: string, options:
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) { reject(new Error(`${command} cancelled before launch`)); return; }
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true, detached: process.platform !== 'win32', env: options.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
+    const stdoutChunks: Buffer[] = [], stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0, stderrBytes = 0;
     const limit = options.maxOutput ?? 8 * 1024 * 1024;
     let timer: NodeJS.Timeout | undefined;
     let reason: string | undefined;
@@ -31,16 +32,18 @@ export async function run(command: string, args: string[], cwd: string, options:
     const onAbort = () => killTree('cancelled');
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.timeoutMs) timer = setTimeout(() => killTree(`timed out after ${options.timeoutMs} ms`), options.timeoutMs);
-    const collect = (current: string, chunk: Buffer) => {
-      if (current.length + chunk.length > limit) { killTree(`exceeded ${limit} output bytes`); return current; }
-      return current + chunk.toString();
+    const collect = (chunks: Buffer[], current: number, chunk: Buffer) => {
+      if (current + chunk.length > limit) { killTree(`exceeded ${limit} output bytes`); return current; }
+      chunks.push(chunk); return current + chunk.length;
     };
-    child.stdout?.on('data', (c: Buffer) => { stdout = collect(stdout, c); });
-    child.stderr?.on('data', (c: Buffer) => { stderr = collect(stderr, c); });
+    child.stdout?.on('data', (c: Buffer) => { stdoutBytes = collect(stdoutChunks, stdoutBytes, c); });
+    child.stderr?.on('data', (c: Buffer) => { stderrBytes = collect(stderrChunks, stderrBytes, c); });
     const cleanup = () => { if (timer) clearTimeout(timer); options.signal?.removeEventListener('abort', onAbort); };
     child.on('error', error => { cleanup(); reject(error); });
     child.on('close', code => {
       cleanup();
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
       if (reason) reject(new Error(`${command} ${reason}: ${(stdout + '\n' + stderr).trim().slice(-4000)}`));
       else if (code !== 0) reject(new ProcessError(command, args, code, stderr, stdout));
       else resolve({ stdout, stderr });

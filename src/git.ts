@@ -13,6 +13,12 @@ export class Git {
   call(...args: string[]) { return runSync('git', args, this.root); }
   head() { return this.call('rev-parse', 'HEAD'); }
   requireClean() { if (this.call('status', '--porcelain')) throw new Error('Commit or stash changes before starting a phase'); }
+  requireAuthor() {
+    for (const key of ['user.name', 'user.email']) {
+      try { if (!this.call('config', '--get', key)) throw new Error('missing'); }
+      catch { throw new Error(`Git ${key} is missing; run git config --global ${key} YOUR_VALUE`); }
+    }
+  }
   ensureRef(ref: string) { if (!safeRef.test(ref) || ref.includes('..') || ref.endsWith('.lock')) throw new Error(`Unsafe Git ref: ${ref}`); }
   branchExists(ref: string) { this.ensureRef(ref); try { this.call('show-ref', '--verify', '--quiet', `refs/heads/${ref}`); return true; } catch { return false; } }
   ensureBranch(ref: string, base: string) { this.ensureRef(ref); if (!this.branchExists(ref)) this.call('branch', ref, base); }
@@ -57,9 +63,10 @@ export class Git {
   }
   private assertPaths(changed: string[], contracts: string[], subject: string) {
     for (const contract of contracts) {
-      const normalized = contract.replaceAll('\\', '/').replace(/\/$/, '');
+      const normalized = contract.replaceAll('\\', '/').replace(/^(\.\/)+/, '').replace(/\/$/, '');
       if (!normalized || normalized === '.' || isAbsolute(contract) || /^[a-zA-Z]:/.test(contract) || normalized.split('/').includes('..') || normalized.startsWith('/')) throw new Error(`Unsafe contract path: ${contract}`);
-      if (changed.some(file => file === normalized || file.startsWith(`${normalized}/`))) throw new Error(`Frozen contract changed on ${subject}: ${contract}`);
+      const compare = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+      if (changed.some(file => compare(file) === compare(normalized) || compare(file).startsWith(`${compare(normalized)}/`))) throw new Error(`Frozen contract changed on ${subject}: ${contract}`);
     }
   }
   commitWorktree(path: string, branch: string, contracts: string[], message: string) {
@@ -67,10 +74,22 @@ export class Git {
     if (!runSync('git', ['status', '--porcelain'], path)) return runSync('git', ['rev-parse', 'HEAD'], path);
     runSync('git', ['add', '-A'], path);
     const staged = runSync('git', ['diff', '--cached', '--name-only', '-z'], path).split('\0').filter(Boolean);
-    try { this.assertPaths(staged, contracts, branch); }
+    try {
+      this.assertPaths(staged, contracts, branch);
+      const secret = staged.find(file => /(^|\/)\.env(?:\..+)?$/i.test(file) && !/\.example$/i.test(file));
+      if (secret) throw new Error(`Refusing to checkpoint possible secret file: ${secret}`);
+    }
     catch (error) { runSync('git', ['reset', '--mixed'], path); throw error; }
     if (staged.length) runSync('git', ['commit', '-m', message], path);
     return runSync('git', ['rev-parse', 'HEAD'], path);
+  }
+  mergeDependency(worktree: string, branch: string, prerequisite: string) {
+    if (runSync('git', ['branch', '--show-current'], worktree) !== branch) throw new Error(`Worktree is not on ${branch}`);
+    if (runSync('git', ['status', '--porcelain'], worktree)) throw new Error('Commit or discard worktree changes before syncing dependencies');
+    const head = this.call('rev-parse', prerequisite);
+    if (runSync('git', ['merge-base', 'HEAD', head], worktree) === head) return head;
+    runSync('git', ['merge', '--no-edit', prerequisite], worktree);
+    return head;
   }
   integrate(branches: string[], foundation: string, integration: string): string {
     this.ensureRef(integration);

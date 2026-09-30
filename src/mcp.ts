@@ -5,19 +5,20 @@ import { Runtime } from './runtime.js';
 import { dirname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { runSync } from './process.js';
-import { planPath } from './config.js';
+import { planPath, readPlan } from './config.js';
 
 function identity(root?: string, agentId?: string) {
-  if (root && agentId) return { root: resolve(root), agentId };
   try {
     const branch = runSync('git', ['branch', '--show-current'], process.cwd());
-    const match = /^agentmesh\/[^/]+\/([a-z][a-z0-9-]*)$/.exec(branch);
-    if (!match) return null;
-    const common = runSync('git', ['rev-parse', '--git-common-dir'], process.cwd());
-    const project = dirname(resolve(process.cwd(), common));
-    if (!existsSync(planPath(project))) return null;
-    return { root: project, agentId: match[1]! };
-  } catch { return null; }
+    const match = /^agentmesh\/([^/]+)\/([a-z][a-z0-9-]*)$/.exec(branch);
+    if (match) {
+      const common = runSync('git', ['rev-parse', '--git-common-dir'], process.cwd());
+      const project = dirname(resolve(process.cwd(), common));
+      if (!existsSync(planPath(project)) || readPlan(project).currentPhase !== match[1]) return null;
+      return { root: project, agentId: match[2]! };
+    }
+  } catch { /* An explicit desktop registration can run outside a worktree. */ }
+  return root && agentId ? { root: resolve(root), agentId } : null;
 }
 
 export async function serveMcp(root?: string, agentId?: string) {
@@ -41,6 +42,7 @@ export async function serveMcp(root?: string, agentId?: string) {
   tool('get_collaboration_plan', 'Read versioned collaboration plan', {}, () => runtime.plan);
   tool('get_current_phase', 'Read current phase', {}, () => runtime.current());
   tool('get_my_task', 'Read tasks assigned to this agent', {}, () => runtime.getTask(agentId));
+  tool('prepare_task', 'Bring completed cross-agent dependencies into this agent worktree before editing', { taskId: z.string() }, ({ taskId }) => runtime.syncDependencies(agentId, taskId));
   tool('list_tasks', 'List current phase tasks and status', {}, () => runtime.state.tasks(runtime.current().id));
   tool('get_task', 'Get a current task', { taskId: z.string() }, ({ taskId }) => runtime.state.tasks(runtime.current().id).find(t => t.id === taskId) ?? null);
   tool('get_contracts', 'Read frozen contract paths', {}, () => runtime.current().contracts);

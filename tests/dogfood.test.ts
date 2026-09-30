@@ -41,7 +41,7 @@ test('dogfood: dependent tasks, automatic review, and validation run end to end'
       const cycle = await runtime.runPhase();
       assert.ok(cycle.agentResults.every(r => r.status === 'fulfilled'));
       assert.deepEqual(calls, ['codex', 'gemini']);
-      assert.ok(cycle.integration);
+      assert.ok(cycle.integration, JSON.stringify(cycle));
       assert.match(cycle.integration.output.join('\n'), /pass 1/);
       assert.equal(runtime.state.phase('phase-1')?.status, 'complete');
     } finally { runtime.close(); }

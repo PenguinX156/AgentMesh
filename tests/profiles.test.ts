@@ -54,7 +54,7 @@ for (const scenario of scenarios) test(`${scenario.type} fixture integrates and 
     const runtime = new Runtime(root);
     try {
       const result = await runtime.runPhase();
-      assert.ok(result.integration);
+      assert.ok(result.integration, JSON.stringify(result));
       assert.match(result.integration.output.join('\n'), /pass 1/);
       assert.equal(runtime.state.phase('phase-1')?.status, 'complete');
     } finally { runtime.close(); }

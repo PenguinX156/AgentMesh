@@ -18,11 +18,13 @@ export async function collaboratePlan(root: string) {
   git.requireClean();
   const foundation = git.head();
   const phase = `planning-${foundation.slice(0, 10)}`;
-  for (const agent of original.agents) if (!adapters[agent.harness].detect().installed) throw new Error(`${agent.harness} CLI is unavailable for planning`);
+  const available = original.agents.filter(agent => adapters[agent.harness].detect().installed);
+  const skipped = original.agents.filter(agent => !adapters[agent.harness].detect().installed).map(agent => agent.id);
+  if (!available.length) throw new Error('No headless harness CLI is available for planning; edit the collaboration plan manually');
   const worktrees: { agent: Plan['agents'][number]; branch: string; path: string }[] = [];
   const cleanup: { agent: string; error?: string }[] = [];
   try {
-    for (const agent of original.agents) worktrees.push({ agent, ...git.createWorktree(phase, agent.id, foundation) });
+    for (const agent of available) worktrees.push({ agent, ...git.createWorktree(phase, agent.id, foundation) });
     const proposals = await Promise.all(worktrees.map(async ({ agent, path }) => {
       const prompt = [
         `Inspect this repository in read-only mode for an AgentMesh collaboration plan.`,
@@ -51,7 +53,7 @@ export async function collaboratePlan(root: string) {
     if (plan.currentPhase !== plan.phases[0]?.id) throw new Error('Current phase must be the first planned phase');
     if (plan.phases.some(p => !p.validation.length)) throw new Error('Every phase needs project validation commands');
     writePlan(root, plan);
-    return { plan, proposals, cleanup };
+    return { plan, proposals, skipped, cleanup };
   } finally {
     for (const { agent } of worktrees) {
       try { git.removeWorktree(phase, agent.id); cleanup.push({ agent: agent.id }); }

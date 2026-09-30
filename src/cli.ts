@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type HarnessName } from './harness.js';
@@ -9,6 +9,8 @@ import { serveMcp } from './mcp.js';
 import { doctor } from './doctor.js';
 import { collaboratePlan } from './planning.js';
 import { githubRepoName, initializeProject } from './onboarding.js';
+import { planPath, readPlan } from './config.js';
+import { runSync } from './process.js';
 
 const args = process.argv.slice(2);
 const command = args.shift() ?? 'help';
@@ -28,7 +30,7 @@ async function main() {
   if (command === 'mcp') return serveMcp(option('root') ?? process.env.AGENTMESH_ROOT, option('agent') ?? process.env.AGENTMESH_AGENT_ID);
   if (command === 'init' || command === 'setup') {
     const names = (option('agents', 'codex') ?? 'codex').split(',') as HarnessName[];
-    const result = await initializeProject(root, names, remote, option('type'));
+    const result = command === 'setup' && existsSync(planPath(root)) ? { root, plan: readPlan(root), existing: true } : await initializeProject(root, names, remote, option('type'));
     const integrations = command === 'setup' ? installIntegrations(root, fileURLToPath(import.meta.url)) : undefined;
     output({ ...result, ...(integrations ? { integrations } : {}), next: command === 'setup'
       ? 'Review and commit the plan, verify MCP tools in each harness, then start --manual or start'
@@ -63,12 +65,14 @@ async function main() {
       case 'checkpoint': {
         const agent = option('agent'), task = option('task'), summary = option('summary');
         if (!agent || !task || !summary) throw new Error('checkpoint requires --agent, --task, and --summary');
+        if (runSync('git', ['branch', '--show-current'], process.cwd()) !== `agentmesh/${runtime.current().id}/${agent}`) throw new Error('Run checkpoint from the named agent worktree');
         output(runtime.submitCheckpoint(agent, task, { summary })); break;
       }
       case 'review': {
         if (args.includes('--auto')) { output(await runtime.reviewAll()); break; }
         const reviewer = option('reviewer'), subject = option('subject'), verdict = option('verdict'), body = option('body', 'Reviewed changes');
         if (!reviewer || !subject || !['approve', 'changes_requested'].includes(verdict ?? '')) throw new Error('review requires --reviewer, --subject, --verdict');
+        if (runSync('git', ['branch', '--show-current'], process.cwd()) !== `agentmesh/${runtime.current().id}/${reviewer}`) throw new Error('Run review from the named reviewer worktree, or use its MCP tool');
         runtime.submitReview(reviewer, subject, verdict as 'approve' | 'changes_requested', body!); output({ submitted: true }); break;
       }
       case 'fix': { const agent = option('agent'); if (!agent) throw new Error('fix requires --agent'); output(await runtime.fixAgent(agent)); break; }

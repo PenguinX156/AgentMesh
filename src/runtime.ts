@@ -4,6 +4,19 @@ import { State } from './state.js';
 import { adapters } from './harness.js';
 import { run, runSync } from './process.js';
 
+function reviewVerdict(text: string): { verdict: 'approve' | 'changes_requested'; body: string } {
+  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const candidates = [cleaned];
+  for (let start = cleaned.lastIndexOf('{'); start >= 0; start = start === 0 ? -1 : cleaned.lastIndexOf('{', start - 1)) candidates.push(cleaned.slice(start));
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(candidate) as { verdict?: string; body?: string };
+      if ((value.verdict === 'approve' || value.verdict === 'changes_requested') && typeof value.body === 'string') return value as { verdict: 'approve' | 'changes_requested'; body: string };
+    } catch { /* Try the next JSON object. */ }
+  }
+  throw new Error('Invalid review response');
+}
+
 export class Runtime {
   readonly plan: Plan;
   readonly git: Git;
@@ -12,6 +25,7 @@ export class Runtime {
   close() { this.state.close(); }
   current() { const phase = this.plan.phases.find(p => p.id === this.plan.currentPhase); if (!phase) throw new Error('Unknown phase'); return phase; }
   begin() {
+    if (this.plan.completed) throw new Error('Project plan is already complete');
     const phase = this.current();
     const existing = this.state.phase(phase.id);
     if (existing) return existing;
@@ -20,6 +34,7 @@ export class Runtime {
       this.state.transaction(() => {
         if (this.state.phase(phase.id)) return;
         this.git.requireClean();
+        this.git.requireAuthor();
         const foundation = this.git.head();
         for (const agent of this.plan.agents) {
           const worktree = this.git.createWorktree(phase.id, agent.id, foundation);
@@ -40,7 +55,28 @@ export class Runtime {
     }
     return this.state.phase(phase.id)!;
   }
-  getTask(agentId: string) { return this.current().tasks.filter(t => t.owner === agentId); }
+  getTask(agentId: string) {
+    const rows = new Map(this.state.tasks(this.current().id).map(row => [row.id, row]));
+    return this.current().tasks.filter(t => t.owner === agentId).map(task => ({ ...task, status: rows.get(task.id)?.status ?? 'planned', dependencies: task.dependsOn.map(id => ({ id, status: rows.get(id)?.status ?? 'planned' })) }));
+  }
+  syncDependencies(agentId: string, taskId: string) {
+    const phase = this.current(), task = phase.tasks.find(candidate => candidate.id === taskId);
+    if (!task || task.owner !== agentId) throw new Error('Task ownership mismatch');
+    const rows = new Map(this.state.tasks(phase.id).map(row => [row.id, row]));
+    const owner = this.state.agents().find(row => row.id === agentId);
+    if (!owner) throw new Error('Phase has not started');
+    const synced: string[] = [];
+    for (const id of task.dependsOn) {
+      const prerequisite = phase.tasks.find(candidate => candidate.id === id)!;
+      const row = rows.get(id);
+      if (row?.status !== 'complete' || !row.report) throw new Error(`Dependency ${id} is not complete`);
+      if (prerequisite.owner === agentId) continue;
+      const source = this.state.agents().find(agent => agent.id === prerequisite.owner)!;
+      this.git.mergeDependency(owner.worktree, owner.branch, source.branch);
+      synced.push(id);
+    }
+    return { taskId, synced, head: this.git.call('rev-parse', owner.branch) };
+  }
   async runAgents(signal?: AbortSignal) {
     const phase = this.current();
     const state = this.begin();
@@ -55,6 +91,7 @@ export class Runtime {
       const results = await Promise.allSettled(batch.map(async task => {
         const agent = this.plan.agents.find(a => a.id === task.owner)!;
         const row = this.state.agents().find(a => a.id === agent.id)!;
+        this.syncDependencies(agent.id, task.id);
         const adapter = adapters[agent.harness];
         if (!adapter.detect().installed) throw new Error(`${agent.harness} CLI is unavailable`);
         const failure = this.state.db.prepare("SELECT output FROM integrations WHERE phase_id=? AND status='failed' ORDER BY id DESC LIMIT 1").get(phase.id) as { output: string } | undefined;
@@ -71,9 +108,11 @@ export class Runtime {
         this.state.db.prepare("UPDATE tasks SET status='working' WHERE phase_id=? AND id=?").run(phase.id, task.id);
         const result = await adapter.invoke(prompt, row.worktree, row.session_id ?? undefined, signal, { root: this.root, agentId: agent.id });
         if (result.sessionId) this.state.db.prepare('UPDATE agents SET session_id=? WHERE id=?').run(result.sessionId, agent.id);
-        if (/^\s*blocked\b/i.test(result.text)) { this.report(agent.id, 'blocker', result.text.slice(0, 12000)); throw new Error(`${agent.id} reported a blocker`); }
+        if (/^BLOCKED:\s+/i.test(result.text.split(/\r?\n/, 1)[0] ?? '')) { this.report(agent.id, 'blocker', result.text.slice(0, 4000)); throw new Error(`${agent.id} reported a blocker`); }
         this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${task.id} checkpoint`);
-        if (this.state.tasks(phase.id).find(t => t.id === task.id)?.status !== 'complete') this.submitCheckpoint(agent.id, task.id, { summary: result.text.slice(0, 12000), tests: [], risks: [] });
+        const checkpoint = this.state.tasks(phase.id).find(t => t.id === task.id);
+        const head = this.git.call('rev-parse', row.branch);
+        if (checkpoint?.status !== 'complete' || !checkpoint.report || JSON.parse(checkpoint.report).commit !== head) this.submitCheckpoint(agent.id, task.id, { summary: result.text.slice(0, 12000), tests: [], risks: [] });
         return { agent: agent.id, task: task.id, result: result.text };
       }));
       results.forEach((r, i) => { if (r.status === 'rejected') this.state.event(phase.id, batch[i]!.owner, 'agent_failure', { task: batch[i]!.id, message: String(r.reason) }); });
@@ -97,14 +136,24 @@ export class Runtime {
     if (!state || !['working', 'review'].includes(state.status)) throw new Error('Phase is not accepting checkpoints');
     const task = this.state.tasks(phase.id).find(t => t.id === taskId);
     if (!task || task.owner !== agent) throw new Error('Task ownership mismatch');
+    const definition = phase.tasks.find(candidate => candidate.id === taskId)!;
+    for (const dependency of definition.dependsOn) {
+      const prerequisite = this.state.tasks(phase.id).find(candidate => candidate.id === dependency);
+      if (prerequisite?.status !== 'complete') throw new Error(`Dependency ${dependency} is not complete`);
+    }
     const row = this.state.agents().find(a => a.id === agent)!;
     this.git.commitWorktree(row.worktree, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json'], `agentmesh: ${phase.id} ${taskId} checkpoint`);
     const commit = this.git.verifyCommit(row.branch, state.foundation);
+    for (const dependency of definition.dependsOn) {
+      const prerequisite = this.state.tasks(phase.id).find(candidate => candidate.id === dependency)!;
+      const priorCommit = (JSON.parse(prerequisite.report!) as { commit: string }).commit;
+      if (this.git.call('merge-base', priorCommit, commit) !== priorCommit) throw new Error(`Dependency ${dependency} is not present in this worktree; call prepare_task first`);
+    }
     this.git.assertContracts(state.foundation, row.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json']);
     const files = this.git.changedFiles(state.foundation, row.branch);
     const record = { ...report, commit, files };
     this.state.transaction(() => {
-      this.state.db.prepare('DELETE FROM reviews WHERE phase_id=? AND subject=?').run(phase.id, agent);
+      if (!task.report || JSON.parse(task.report).commit !== commit) this.state.db.prepare('DELETE FROM reviews WHERE phase_id=? AND subject=?').run(phase.id, agent);
       this.state.db.prepare("UPDATE tasks SET status='complete',report=? WHERE phase_id=? AND id=?").run(JSON.stringify(record), phase.id, taskId);
       this.state.event(phase.id, agent, 'checkpoint', { taskId, ...record });
       if (this.state.tasks(phase.id).every(t => t.status === 'complete')) this.state.db.prepare("UPDATE phases SET status='review' WHERE id=?").run(phase.id);
@@ -126,7 +175,7 @@ export class Runtime {
     if (!status || !['working', 'review'].includes(status)) throw new Error('Phase is not accepting messages');
     if (sender === recipient || !this.plan.agents.some(agent => agent.id === sender) || !this.plan.agents.some(agent => agent.id === recipient)) throw new Error('Message needs another participating agent');
     if (!body.trim() || body.length > 4000) throw new Error('Message body must be 1-4000 characters');
-    if (status === 'working' && !['blocker', 'contract_conflict', 'critical_discovery'].includes(kind)) throw new Error('Independent work only permits exceptional messages before checkpoint');
+    if (status === 'working' && !['blocker', 'contract_conflict', 'critical_discovery'].includes(kind) && !(kind === 'review' && this.state.tasks(phase.id).filter(task => task.owner === sender).every(task => task.status === 'complete'))) throw new Error('Independent work only permits exceptional messages before checkpoint');
     const id = this.state.message(phase.id, sender, recipient, kind, body);
     this.state.event(phase.id, sender, 'message', { recipient, kind, id });
     return { id, queued: true, delivery: 'Read with get_messages or checkpoint context' };
@@ -180,11 +229,10 @@ export class Runtime {
         const head = runSync('git', ['rev-parse', 'HEAD'], row.worktree);
         if (before) { results.push({ reviewer: reviewer.id, subject: subject.id, error: 'Reviewer worktree is dirty' }); break; }
         try {
-          const prompt = `Review ${subject.id}'s committed changes for correctness, safety, and task completion. Do not modify files. Return only JSON with keys verdict (approve or changes_requested) and body (concise findings).\nTask: ${JSON.stringify(this.getTask(subject.id))}\nDiff:\n${this.diff(subject.id)}`;
+          const prompt = `Review ${subject.id}'s committed changes for correctness, safety, and task completion. Do not modify files. Return only JSON with keys verdict (approve or changes_requested) and body (concise findings).\nTask: ${JSON.stringify(this.getTask(subject.id))}\nDiff:\n${this.git.diff(this.state.phase(phase.id)!.foundation, subjectRow.branch, 20000)}`;
           const response = await adapters[reviewer.harness].invoke(prompt, row.worktree, undefined, undefined, { root: this.root, agentId: reviewer.id }, 'review');
           if (runSync('git', ['status', '--porcelain'], row.worktree) !== before || runSync('git', ['rev-parse', 'HEAD'], row.worktree) !== head) throw new Error('Review modified reviewer worktree');
-          const parsed = JSON.parse(response.text.slice(response.text.indexOf('{'), response.text.lastIndexOf('}') + 1));
-          if (!['approve', 'changes_requested'].includes(parsed.verdict) || typeof parsed.body !== 'string') throw new Error('Invalid review response');
+          const parsed = reviewVerdict(response.text);
           this.submitReview(reviewer.id, subject.id, parsed.verdict, parsed.body);
           results.push({ reviewer: reviewer.id, subject: subject.id, verdict: parsed.verdict });
           if (parsed.verdict === 'approve') approvals++;
@@ -248,7 +296,7 @@ export class Runtime {
     const reviews = (this.state.db.prepare('SELECT reviewer,subject,commit_sha,verdict,body FROM reviews WHERE phase_id=? AND (subject=? OR reviewer=?) ORDER BY id DESC LIMIT 30').all(phase.id, agent, agent) as { reviewer: string; subject: string; commit_sha: string; verdict: string; body: string }[])
       .map(review => ({ ...review, body: review.body.slice(0, 3000) }));
     const exceptionalEvents = (this.state.recentEvents(phase.id, 50) as { agent_id: string | null; kind: string; body: string }[])
-      .filter(event => ['blocker', 'contract_conflict', 'critical_discovery'].includes(event.kind))
+      .filter(event => ['blocker', 'contract_conflict', 'critical_discovery', 'decision'].includes(event.kind))
       .map(event => ({ agent: event.agent_id, kind: event.kind, body: event.body.slice(0, 2000) }));
     return { phase: phase.id, tasks: tasks.slice(0, 100), reviews, exceptionalEvents,
       messages: this.state.recentMessagesFor(phase.id, agent, 20) };
@@ -272,7 +320,12 @@ export class Runtime {
       const commit = this.git.verifyCommit(agent.branch, state.foundation);
       this.git.assertContracts(state.foundation, agent.branch, [...phase.contracts, '.agentmesh/collaboration-plan.json']);
       const reports = this.state.tasks(phase.id).filter(t => t.owner === agent.id);
-      if (reports.some(t => !t.report || JSON.parse(t.report).commit !== commit)) throw new Error(`${agent.id} needs a checkpoint for its current commit`);
+      if (reports.some(t => t.status !== 'complete' || !t.report)) throw new Error(`${agent.id} has incomplete tasks`);
+      for (const report of reports) {
+        const checkpoint = JSON.parse(report.report!) as { commit: string };
+        if (this.git.call('merge-base', checkpoint.commit, commit) !== checkpoint.commit) throw new Error(`${agent.id} has a checkpoint outside its current branch`);
+      }
+      if (reports.length && !reports.some(report => JSON.parse(report.report!).commit === commit)) throw new Error(`${agent.id} needs a checkpoint for its current commit`);
     }
     const claimed = this.state.db.prepare("UPDATE phases SET status='integrating' WHERE id=? AND status='review'").run(phase.id);
     if (claimed.changes !== 1) throw new Error('Another process already claimed integration');
@@ -346,19 +399,18 @@ export class Runtime {
     const index = integratedPlan.phases.findIndex(p => p.id === integratedPlan.currentPhase);
     if (JSON.stringify(integratedPlan.phases.slice(0, index + 1)) !== JSON.stringify(this.plan.phases.slice(0, index + 1))) throw new Error('Integration plan rewrote a completed phase');
     const next = integratedPlan.phases[index + 1];
-    if (!next) throw new Error('No further phase is planned');
     this.git.call('merge', '--ff-only', this.plan.integration.branch);
-    const updated: Plan = { ...integratedPlan, currentPhase: next.id };
+    const updated: Plan = next ? { ...integratedPlan, currentPhase: next.id } : { ...integratedPlan, completed: true };
     writePlan(this.root, updated);
     this.git.call('add', '--', '.agentmesh/collaboration-plan.json');
-    this.git.call('commit', '-m', `agentmesh: begin ${next.id}`);
+    this.git.call('commit', '-m', next ? `agentmesh: begin ${next.id}` : 'agentmesh: complete project');
     runSync('git', ['merge', '--ff-only', this.git.head()], this.git.integrationPath());
     const cleanup: { agent: string; removed: boolean; error?: string }[] = [];
     for (const agent of this.plan.agents) {
       try { this.git.removeWorktree(this.current().id, agent.id); cleanup.push({ agent: agent.id, removed: true }); }
       catch (error) { cleanup.push({ agent: agent.id, removed: false, error: String(error) }); }
     }
-    return { next: next.id, foundation: this.git.head(), cleanup };
+    return { next: next?.id ?? null, complete: !next, foundation: this.git.head(), cleanup };
   }
   status() { const phase = this.current(); return { phase: this.state.phase(phase.id), agents: this.state.agents(), tasks: this.state.tasks(phase.id), events: this.state.recentEvents(phase.id) }; }
 }

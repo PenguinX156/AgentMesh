@@ -1,6 +1,6 @@
 import { run, runSync } from './process.js';
 
-export type HarnessName = 'codex' | 'cursor' | 'gemini';
+export type HarnessName = 'codex' | 'cursor' | 'gemini' | 'antigravity';
 export interface Capabilities { installed: boolean; supportsResume: boolean; supportsExternalPrompt: boolean; supportsMCP: boolean; supportsCancellation: boolean; supportsPersistentSession: boolean; supportsStructuredOutput: boolean; }
 export interface AgentResult { text: string; sessionId?: string; raw: string; }
 export interface HarnessAdapter {
@@ -10,7 +10,7 @@ export interface HarnessAdapter {
 }
 function agentEnv(identity?: { root: string; agentId: string }) { return identity ? { ...process.env, AGENTMESH_ROOT: identity.root, AGENTMESH_AGENT_ID: identity.agentId } : process.env; }
 function found(command: string) { try { runSync(command, ['--version'], process.cwd()); return true; } catch { return false; } }
-function capabilities(installed: boolean): Capabilities { return { installed, supportsResume: true, supportsExternalPrompt: true, supportsMCP: true, supportsCancellation: true, supportsPersistentSession: true, supportsStructuredOutput: true }; }
+function capabilities(installed: boolean): Capabilities { return { installed, supportsResume: installed, supportsExternalPrompt: installed, supportsMCP: installed, supportsCancellation: installed, supportsPersistentSession: installed, supportsStructuredOutput: installed }; }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Harness returned an invalid JSON object');
   return value as Record<string, unknown>;
@@ -28,6 +28,7 @@ export function parseCodexOutput(stdout: string, sessionId?: string): AgentResul
     try { event = object(JSON.parse(line)); } catch { continue; }
     if (event.type === 'thread.started') id = session(event.thread_id, id);
     if (event.type === 'turn.failed') throw new Error(`codex turn failed: ${JSON.stringify(event.error ?? event)}`);
+    if (event.type === 'error') throw new Error(`codex error: ${JSON.stringify(event.message ?? event.error ?? event)}`);
     if (event.type === 'item.completed') {
       const item = event.item && typeof event.item === 'object' ? event.item as Record<string, unknown> : undefined;
       if (item?.type === 'agent_message' && typeof item.text === 'string') answer = item.text;
@@ -74,4 +75,9 @@ export class GeminiAdapter implements HarnessAdapter {
     return parseGeminiOutput(stdout, sessionId);
   }
 }
-export const adapters: Record<HarnessName, HarnessAdapter> = { codex: new CodexAdapter(), cursor: new CursorAdapter(), gemini: new GeminiAdapter() };
+export class AntigravityAdapter implements HarnessAdapter {
+  name = 'antigravity' as const;
+  detect() { return { ...capabilities(false), supportsMCP: true }; }
+  async invoke(): Promise<AgentResult> { throw new Error('Antigravity uses manual MCP sessions; open its AgentMesh worktree in the IDE'); }
+}
+export const adapters: Record<HarnessName, HarnessAdapter> = { codex: new CodexAdapter(), cursor: new CursorAdapter(), gemini: new GeminiAdapter(), antigravity: new AntigravityAdapter() };

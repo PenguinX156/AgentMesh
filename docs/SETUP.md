@@ -1,6 +1,6 @@
 # Set up AgentMesh for a project
 
-AgentMesh is a local CLI and collaboration runtime that exposes a **stdio MCP server**. It is not a separate Codex, Cursor, or Gemini plugin. Install the tool once on your machine, then add its small `.agentmesh` configuration to each project. Do not clone the AgentMesh tool repository inside the project repository; nested Git repositories complicate normal project commits and worktrees. The MCP server gives each agent tools for reading its task, exchanging messages, submitting checkpoints, and reviewing another agent's work. Each agent still writes code through its own harness app and uses the model selected there.
+AgentMesh is a local CLI and collaboration runtime that exposes a **stdio MCP server**. Install the tool once on your machine, then add its small `.agentmesh` configuration to each project. Do not clone the AgentMesh tool repository inside the project repository; nested Git repositories complicate normal project commits and worktrees. The MCP server gives each agent tools for reading its task, exchanging messages, submitting checkpoints, and reviewing another agent's work. Each agent still writes code through its own harness app and uses the model selected there.
 
 ## 1. Install the AgentMesh CLI
 
@@ -22,14 +22,14 @@ Keep this tool checkout in place. `npm link` points the `agentmesh` command to i
 Run this from the parent directory where you want the project clone. Substitute the repository URL and include only the harnesses you will use; repeated names create multiple agents of the same harness. Git authentication must already work if the repository is private.
 
 ```powershell
-agentmesh setup --repo https://github.com/OWNER/PROJECT.git --agents codex,cursor,gemini
+agentmesh setup --repo https://github.com/OWNER/PROJECT.git --agents codex,cursor,antigravity
 cd PROJECT
 ```
 
 If the repository is **already cloned**, run this from that checkout instead:
 
 ```powershell
-agentmesh setup --agents codex,cursor,gemini
+agentmesh setup --agents codex,cursor,antigravity
 ```
 
 `setup` clones or uses the checkout, creates `.agentmesh/collaboration-plan.json` and local SQLite state, and registers the selected harnesses with the MCP server. Check its per-harness results. Edit the JSON plan before starting:
@@ -64,8 +64,9 @@ agentmesh doctor
 | Codex | Registers `agentmesh` through `codex mcp add` (Codex CLI must be installed for this registration). | Run `codex mcp get agentmesh` or `codex mcp list`, then check that AgentMesh tools appear in a Codex session. |
 | Cursor | Adds `mcpServers.agentmesh` to `%USERPROFILE%\.cursor\mcp.json`. | Open Cursor's MCP settings or Agent tools and check that the server and its tools are available. |
 | Gemini CLI | Adds `mcpServers.agentmesh` to `%USERPROFILE%\.gemini\settings.json`. | Run `gemini mcp list` from a trusted project directory or use `/mcp` in Gemini CLI. |
+| Antigravity IDE/CLI | Adds `mcpServers.agentmesh` to `%USERPROFILE%\.gemini\config\mcp_config.json`. | In Antigravity, open MCP Servers and inspect or refresh the custom server. |
 
-If a harness was already open, start a new session or reload its MCP servers after registration. The separate `cursor-agent` and `gemini` headless CLIs are needed only for `agentmesh start` automated runs; they are not required to write their MCP configuration or to work manually in the harness app. `agentmesh doctor` reports CLI availability and local config presence; it does not prove that a GUI app loaded the server. Gemini CLI is the supported Gemini harness here; other Gemini-branded apps have not been verified.
+If a harness was already open, start a new session or reload its MCP servers after registration. The separate `cursor-agent` and `gemini` headless CLIs are needed only for `agentmesh start` automated runs; Antigravity currently uses manual MCP sessions. `agentmesh doctor` reports CLI availability and local config presence; it does not prove that a GUI app loaded the server. Registration writes one global `agentmesh` entry per harness bound to this project. Register again when changing projects.
 
 ## 4. Start a manual collaboration phase
 
@@ -75,11 +76,11 @@ agentmesh agents
 agentmesh status
 ```
 
-`start --manual` prints one **worktree path per agent**. Open each printed path as a separate workspace in its matching harness: Codex for the Codex worktree, Cursor for the Cursor worktree, and Gemini CLI for the Gemini worktree. Configure the desired model in that harness. The MCP server identifies a manual agent session from its managed worktree branch, so opening the original project root will show inactive AgentMesh context.
+`start --manual` prints one **worktree path per agent**. Open each printed path as a separate workspace in its matching harness. Configure the desired model in that harness. The MCP registration passes an explicit project and agent identity, and a managed worktree branch takes precedence when available.
 
 In each agent session, a useful first prompt is:
 
-> Use the AgentMesh MCP tools to read `get_project_context`, `get_my_task`, and `get_contracts`. Work only on your assigned task in this worktree. Check `get_messages` for coordination. When your work is verified, use `submit_checkpoint` with the task ID, summary, and tests run.
+> Use the AgentMesh MCP tools to read `get_project_context`, `get_my_task`, and `get_contracts`. If your task has cross-agent dependencies, call `prepare_task` after they checkpoint and before editing. Work only on your assigned task in this worktree. Check `get_messages` for coordination. When your work is verified, use `submit_checkpoint` with the task ID, summary, and tests run.
 
 Agents can use `send_message` for blockers, contract conflicts, and critical discoveries during independent work. Messages are queued in local state; another agent receives them when it calls `get_messages` or reads checkpoint context. Ordinary questions and decisions are available during review. This is not a live chat or automatic notification channel.
 
@@ -102,3 +103,4 @@ agentmesh advance
 - [Codex MCP configuration](https://developers.openai.com/learn/docs-mcp)
 - [Cursor MCP configuration](https://docs.cursor.com/context/model-context-protocol)
 - [Gemini CLI MCP server configuration](https://geminicli.com/docs/tools/mcp-server/)
+- [Antigravity MCP configuration](https://antigravity.google/docs/mcp)
